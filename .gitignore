@@ -1,0 +1,10 @@
+# Dataset, logs, and model files
+*.csv
+*.ckpt
+*.log
+
+# Caches
+__pycache__
+
+# Vocab JSON Files
+*.json
