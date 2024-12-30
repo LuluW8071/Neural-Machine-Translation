@@ -6,7 +6,6 @@ import csv
 from torch.utils.data import Dataset, DataLoader, TensorDataset, RandomSampler, SequentialSampler
 
 import utils
-from utils import SOS_Token, EOS_Token
 from logger import logger
 
 class PrepData(Dataset):
@@ -99,6 +98,8 @@ class NMTDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         """Setup datasets and create tokenized tensors."""
         self.pairs = self._filter_and_prepare_data()
+        
+        EOS_token = utils.EOS_Token
         num_pairs = len(self.pairs)
 
         input_ids = np.zeros((num_pairs, self.max_len), dtype=np.int32)
@@ -107,8 +108,8 @@ class NMTDataModule(pl.LightningDataModule):
         for idx, (inp, tgt) in enumerate(self.pairs):
             inp_ids = utils.indexesFromSentence(self.input_lang, inp)
             tgt_ids = utils.indexesFromSentence(self.output_lang, tgt)
-            inp_ids.append(EOS_Token)
-            tgt_ids.append(EOS_Token)
+            inp_ids.append(EOS_token)
+            tgt_ids.append(EOS_token)
             input_ids[idx, :len(inp_ids)] = inp_ids
             target_ids[idx, :len(tgt_ids)] = tgt_ids
 
