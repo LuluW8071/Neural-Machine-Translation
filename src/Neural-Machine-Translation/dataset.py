@@ -1,9 +1,16 @@
 import pytorch_lightning as pl
+import csv
 import numpy as np
 import torch
-import csv
 
-from torch.utils.data import Dataset, DataLoader, TensorDataset, RandomSampler, SequentialSampler
+from torch.utils.data import (
+    Dataset,
+    DataLoader,
+    TensorDataset,
+    random_split,
+    RandomSampler,
+    SequentialSampler
+)
 
 import utils
 from logger import logger
@@ -35,7 +42,6 @@ class PrepData(Dataset):
         self.output_lang = utils.WordVocabulary(lang1 if reverse else lang2)
 
 
-
     def __len__(self):
         return len(self.pairs)
 
@@ -50,7 +56,7 @@ class PrepData(Dataset):
 
 
 class NMTDataModule(pl.LightningDataModule):
-    def __init__(self, file_path, lang1, lang2, split_ratio=0.8, batch_size=32, num_workers=2, max_len=8, reverse=False):
+    def __init__(self, file_path, lang1, lang2, split_ratio=0.8, batch_size=32, num_workers=2, max_len=12, seed=42, reverse=False):
         """
         Data module for NMT training and validation.
 
@@ -72,6 +78,7 @@ class NMTDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.max_len = max_len
+        self.seed = seed
         self.reverse = reverse
         self.input_lang = None
         self.output_lang = None
@@ -117,7 +124,7 @@ class NMTDataModule(pl.LightningDataModule):
 
         train_size = int(self.split_ratio * len(dataset))
         test_size = len(dataset) - train_size
-        self.train_dataset, self.test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
+        self.train_dataset, self.test_dataset = random_split(dataset, [train_size, test_size])
 
         self.train_sampler = RandomSampler(self.train_dataset)
         self.test_sampler = SequentialSampler(self.test_dataset)
@@ -139,3 +146,4 @@ class NMTDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True
         )
+

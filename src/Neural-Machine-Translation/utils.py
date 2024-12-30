@@ -1,12 +1,11 @@
-import re 
+import re
+import random
 import json
 import torch
-
-import logger
+import numpy as np
 
 SOS_Token = 0
 EOS_Token = 1
-
 
 class WordVocabulary:
     """ Word class to store vocabulary and corpus """
@@ -69,6 +68,7 @@ class WordVocabulary:
 
 
 # Lowercase, trim and remove non-letter characters
+# NOTE: Might need change in the pre processing of strings as per language used
 def normalize_String(s):
     s = s.lower().strip()
     # Add spaces behind punctuation
@@ -97,3 +97,12 @@ def tensorFromPair(input_lang, output_lang, pair):
     output_tensor = tensorFromSentence(output_lang, pair[1])
     return (input_tensor, output_tensor)
 
+
+def set_seed(seed):
+    """Set seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True  # Make the results deterministic
+    torch.backends.cudnn.benchmark = False     # Disable auto-tuner to ensure deterministic behavior
