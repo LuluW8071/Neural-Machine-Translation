@@ -98,6 +98,20 @@ def tensorFromPair(input_lang, output_lang, pair):
     return (input_tensor, output_tensor)
 
 
+
+def sentenceFromIndexes(lang, indexes):
+    """Convert a list of token indices back into a sentence."""
+    words = []
+    for index in indexes:
+        if index in lang.index2word:
+            word = lang.index2word[index]
+            # Stop at the EOS token
+            if word == "EOS":
+                break
+            words.append(word)
+    return ' '.join(words)
+
+
 def set_seed(seed):
     """Set seed for reproducibility."""
     random.seed(seed)
