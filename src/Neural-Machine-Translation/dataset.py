@@ -146,4 +146,3 @@ class NMTDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True
         )
-
