@@ -13,7 +13,7 @@ class WordVocabulary:
         self.name = name
         self.word2index = {}
         self.word2count = {}
-        self.index2word = {0: "SOS", 1: "EOS"}
+        self.index2word = {0: "<SOS>", 1: "<EOS>"}
         self.n_words = 2  # Count SOS and EOS Tokens
 
     def addSentence(self, sentence):
@@ -96,6 +96,19 @@ def tensorFromPair(input_lang, output_lang, pair):
     input_tensor = tensorFromSentence(input_lang, pair[0])
     output_tensor = tensorFromSentence(output_lang, pair[1])
     return (input_tensor, output_tensor)
+
+
+def sentenceFromIndexes(lang, indexes):
+    """Convert a list of token indices back into a sentence."""
+    words = []
+    for index in indexes:
+        if index in lang.index2word:
+            word = lang.index2word[index]
+            # Stop at the EOS token
+            if word == "<EOS>":
+                break
+            words.append(word)
+    return ' '.join(words)
 
 
 def set_seed(seed):
