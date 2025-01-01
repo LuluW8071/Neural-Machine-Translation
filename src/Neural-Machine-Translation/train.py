@@ -9,38 +9,43 @@ import torch.nn as nn
 
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
-from torchmetrics import BLEUScore
+from torchmetrics.text import BLEUScore, CHRFScore
 
 # Load API
 from dotenv import load_dotenv
 load_dotenv()
 
 import utils
+
 from dataset import NMTDataModule
 from model import NMTModel
-
+from logger import logger as log
 
 class NMTTrainer(pl.LightningModule):
-    def __init__(self, model, args):
+    def __init__(self, model, data_module, args):
         super(NMTTrainer, self).__init__()
         self.model = model
         self.args = args
 
+        self.input_lang = data_module.input_lang
+        self.output_lang = data_module.output_lang
+
         self.losses = []
-        self.bleu_scores = []
+        self.bleu_scores, self.chrf_scores = [], []
 
         # Metrics
-        self.bleu = BLEUScore(n_gram=4, smooth=False)
+        # self.bleu = BLEUScore(n_gram=1, smooth=False)
+        self.chrf = CHRFScore()
 
-        # Ignore padding when computing loss
-        self.loss_fn = nn.CrossEntropyLoss(ignore_index=0)
+        # Ignore padding when computing loss)
+        self.loss_fn = nn.CrossEntropyLoss()
 
         # Precompute sync_dist for distributed GPUs train
         self.sync_dist = True if args.gpus > 1 else False
 
     
     def forward(self, input_tensor, target_tensor):
-        return self.model(input_tensor, target_tensor, self.args.max_len)
+        return self.model(input_tensor, target_tensor)
 
 
     def configure_optimizers(self):
@@ -53,14 +58,14 @@ class NMTTrainer(pl.LightningModule):
         )
 
         scheduler = {
-            'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
+            'scheduler': optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, 
                 mode='min', 
-                factor=self.args.lr_factor,     # Reduce LR by multiplying it by 0.8
-                patience=self.args.lr_patience, # No. of epochs to wait before reducing LR
-                threshold=self.lr_threshold,    # Minimum change in val_loss to qualify as improvement
-                threshold_mode='rel',           # Relative threshold (e.g., 0.1% change)
-                min_lr=self.min_lr              # Minm. LR to stop reducing
+                factor=self.args.lr_factor,
+                patience=self.args.lr_patience,
+                threshold=self.args.min_lr_threshold,
+                threshold_mode='rel',
+                min_lr=self.args.min_lr
             ),
             'monitor': 'val_loss',              # Metric to monitor
             'interval': 'epoch',                # Scheduler step every epoch
@@ -87,57 +92,68 @@ class NMTTrainer(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         # Unpack batch
-        input_tensor, target_tensor = batch
+        # input_tensors, target_tensors = batch
         loss, decoded_output = self._common_step(batch, batch_idx)
         self.losses.append(loss)
 
-        # Decode the outputs
-        decoded_words = self._decode(decoded_output)
-        source = utils.sentenceFromIndexes(self.input_lang, input_tensor.tolist())
-        targets = utils.sentenceFromIndexes(self.output_lang, target_tensor.tolist())
+        # # Decode the outputs
+        # decoded_sentence = self._decode(decoded_output)
+        # source = [utils.sentenceFromIndexes(self.input_lang, input_tensor.tolist()) for input_tensor in input_tensors]
+        # targets = [utils.sentenceFromIndexes(self.output_lang, target_tensor.tolist()) for target_tensor in target_tensors]
         
-        if batch_idx % 100 == 0:
-            log_source, log_targets = source[-1], targets[-1]
-            log_texts = f"Source: {log_source}\n> {log_targets}\n= {decoded_words[-1]}\n\n"
-            self.logger.experiment.log_text(text = log_texts)
-            
-        # Calculate the metrics
-        bleu_batch = self.bleu(decoded_words, targets)
+        # # print(source, targets, decoded_sentence, sep="\n", end="\n\n")
 
-        self.bleu_scores.append(bleu_batch)
+        # if batch_idx % 32 == 0:
+        #     log_source, log_targets = source[-1], targets[-1]
+        #     log_texts = f"{log_source}\n> {log_targets}\n= {decoded_sentence[-1]}\n\n"
+        #     self.logger.experiment.log_text(text = log_texts)
+            
+        # # Calculate the metrics
+        # # bleu_batch = self.bleu(decoded_sentence, targets)
+        # chrf_batch = self.chrf(decoded_sentence, targets)
+
+        # # self.bleu_scores.append(bleu_batch)
+        # self.chrf_scores.append(chrf_batch)
         return {'val_loss': loss}    
 
 
     def on_validation_epoch_end(self):
         # Calculate averages of metrics over the entire epoch
         avg_loss = torch.stack(self.losses).mean()
-        avg_bleu = torch.stack(self.bleu_scores).mean()
+        # avg_bleu = torch.stack(self.bleu_scores).mean()
+        # avg_chrf = torch.stack(self.chrf_scores).mean()
 
         # Log all metrics using log_dict
         metrics = {
             'val_loss': avg_loss,
-            'val_bleu': avg_bleu
+            # 'val_bleu': avg_bleu,
+            # 'val_chrf': avg_chrf
         }
 
         self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
 
         # Clear the lists for the next epoch
         self.losses.clear()
-        self.bleu_scores.clear()
+        # self.bleu_scores.clear()
+        # self.chrf_scores.clear()
     
     def _decode(self, decoded_output):
         # Turn back to sentence
         _, topi = decoded_output.topk(1)
-        decoded_ids = topi.squeeze()
+        decoded_ids = topi.squeeze().tolist()
 
-        decoded_words = []
-        for idx in decoded_ids:
-            if idx.item() == 1:     # EOS token: 1
-                decoded_words.append('<EOS>')
-                break
-            decoded_words.append(self.output_lang.index2word[idx.item()])
+        batch_sentences = []  # List to hold sentences for the entire batch
+        for ids in decoded_ids:
+            decoded_words = []
+            for idx in ids:
+                if idx == 1:  # EOS token: 1
+                    # decoded_words.append('<EOS>')
+                    break
+                decoded_words.append(self.output_lang.index2word[idx])
+            sentence = ' '.join(decoded_words)
+            batch_sentences.append(sentence)    # Add the sentence to the batch list
 
-        return decoded_words
+        return batch_sentences
     
 
 def main(args):
@@ -159,31 +175,40 @@ def main(args):
 
     data_module.setup()
 
+    data_module.input_lang.save_to_file("input_vocab.json", input=True)
+    data_module.output_lang.save_to_file("output_vocab.json", input=False)
+
     # Initialize the model
     h_params = {
         "input_size": data_module.input_lang.n_words,
         "output_size": data_module.output_lang.n_words,
-        "hidden_size": 128,
-        "num_layers": 1,
+        "hidden_size": 256,
+        "num_layers": 2,
         "max_len": args.max_len,
-        "dropout_rate": 0.1, 
+        "bidirection": True,
+        "dropout_rate": 0.1,
+        "device": args.device
     }
 
     model = NMTModel(**h_params)
-    # model = torch.compile(model)
 
-    nmt_trainer = NMTTrainer(model, args)
+    model = torch.compile(model)
+    nmt_trainer = NMTTrainer(model, data_module, args)
 
     # Initialize the trainer
-    comet_logger = CometLogger(api_key=os.getenv('API_KEY'), project_name=os.getenv('PROJECT_NAME'))
+    comet_logger = CometLogger(
+        api_key=os.getenv('API_KEY'), 
+        project_name=os.getenv('PROJECT_NAME'),
+    )
 
     # Checkpoint Callbacks
     checkpoint_callback = ModelCheckpoint(
         monitor='val_loss',
         dirpath="./saved_checkpoint/",       
-        filename='nmt-{epoch:02d}-{val_bleu:.3f}',                                             
-        save_top_k=2,
-        mode='min'
+        filename='nmt-{epoch:02d}-{val_loss:.3f}',                                             
+        save_top_k=3,
+        mode='min',
+        save_weights_only=True
     )
 
     # Trainer Parameters
@@ -197,9 +222,9 @@ def main(args):
         'gradient_clip_val': args.grad_clip,                            # Gradient norm clipping value
         'accumulate_grad_batches': args.accumulate_grad,                # No. of batches to accumulate gradients over
         'callbacks': [LearningRateMonitor(logging_interval='epoch'),    # Callbacks to use for training
-                      EarlyStopping(monitor="val_loss", patience=3),
+                      EarlyStopping(monitor="val_loss", patience=5),
                       checkpoint_callback],
-        'logger': comet_logger,                                         # Logger to use for training
+        'logger': comet_logger                                        # Logger to use for training
     }
 
     if args.gpus > 1:
@@ -207,8 +232,9 @@ def main(args):
 
     trainer = pl.Trainer(**trainer_args)
 
-    trainer.fit(nmt_trainer, data_module)
+    trainer.fit(nmt_trainer, data_module, ckpt_path=args.checkpoint_path)
     trainer.validate(nmt_trainer, data_module)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -228,18 +254,18 @@ if __name__ == '__main__':
     parser.add_argument('--seed', default=42, type=int, help='seed for reproducibility')
 
     # General Train Hyperparameters
-    parser.add_argument('--epochs', default=50, type=int, help='number of total epochs to run')
+    parser.add_argument('--epochs', default=20, type=int, help='number of total epochs to run')
     parser.add_argument('--batch_size', default=32, type=int, help='size of batch')
     
-    parser.add_argument('-lr','--learning_rate', default=3e-4, type=float, help='learning rate')
+    parser.add_argument('-lr','--learning_rate', default=2e-3, type=float, help='learning rate')
     parser.add_argument('-lrf', '--lr_factor', default=0.5, type=float, help='learning rate factor for decay')
-    parser.add_argument('-lrp', '--lr_patience', default=2, type=int, help='learning rate patience for decay')
+    parser.add_argument('-lrp', '--lr_patience', default=1, type=int, help='learning rate patience for decay')
     parser.add_argument('-mlt', '--min_lr_threshold', default=5e-3, type=float, help='minimum learning rate threshold')
     parser.add_argument('-mlr', '--min_lr', default=5e-6, type=float, help='minimum learning rate')
 
     parser.add_argument('--precision', default='32-true', type=str, help='precision')
     parser.add_argument('--checkpoint_path', default=None, type=str, help='path of checkpoint file to resume training')
-    parser.add_argument('-gc', '--grad_clip', default=0.8, type=float, help='gradient norm clipping value')
+    parser.add_argument('-gc', '--grad_clip', default=1.0, type=float, help='gradient norm clipping value')
     parser.add_argument('-ag', '--accumulate_grad', default=2, type=int, help='number of batches to accumulate gradients over')
 
     args = parser.parse_args()
