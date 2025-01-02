@@ -9,7 +9,7 @@ import torch.nn as nn
 
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
-from torchmetrics.text import BLEUScore, CHRFScore
+from torchmetrics.text.rouge import ROUGEScore
 
 # Load API
 from dotenv import load_dotenv
@@ -31,14 +31,14 @@ class NMTTrainer(pl.LightningModule):
         self.output_lang = data_module.output_lang
 
         self.losses = []
-        self.bleu_scores, self.chrf_scores = [], []
+        self.rouge_scores = []
 
-        # Metrics
-        # self.bleu = BLEUScore(n_gram=1, smooth=False)
-        self.chrf = CHRFScore()
-
-        # Ignore padding when computing loss)
+        # Loss fn and Metrics
         self.loss_fn = nn.CrossEntropyLoss()
+        self.rouge_score = ROUGEScore(
+            rouge_keys=("rouge2", "rougeL"), 
+            use_stemmer=True if self.output_lang == 'en' else False
+        )
 
         # Precompute sync_dist for distributed GPUs train
         self.sync_dist = True if args.gpus > 1 else False
@@ -86,56 +86,51 @@ class NMTTrainer(pl.LightningModule):
         loss, _ = self._common_step(batch, batch_idx)
 
         # Log train_loss in the logger
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=self.sync_dist)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         # Unpack batch
-        # input_tensors, target_tensors = batch
+        input_tensors, target_tensors = batch
+
         loss, decoded_output = self._common_step(batch, batch_idx)
-        self.losses.append(loss)
+        # self.losses.append(loss)
 
-        # # Decode the outputs
-        # decoded_sentence = self._decode(decoded_output)
-        # source = [utils.sentenceFromIndexes(self.input_lang, input_tensor.tolist()) for input_tensor in input_tensors]
-        # targets = [utils.sentenceFromIndexes(self.output_lang, target_tensor.tolist()) for target_tensor in target_tensors]
-        
-        # # print(source, targets, decoded_sentence, sep="\n", end="\n\n")
+        # Decode the outputs
+        decoded_sentence = self._decode(decoded_output)
+        source = [utils.sentenceFromIndexes(self.input_lang, input_tensor.tolist()) for input_tensor in input_tensors]
+        targets = [utils.sentenceFromIndexes(self.output_lang, target_tensor.tolist()) for target_tensor in target_tensors]
 
-        # if batch_idx % 32 == 0:
-        #     log_source, log_targets = source[-1], targets[-1]
-        #     log_texts = f"{log_source}\n> {log_targets}\n= {decoded_sentence[-1]}\n\n"
-        #     self.logger.experiment.log_text(text = log_texts)
+        if batch_idx % 32 == 0:
+            log_source, log_targets = source[-1], targets[-1]
+            log_texts = f"{log_source}\n> {log_targets}\n= {decoded_sentence[-1]}\n\n"
+            self.logger.experiment.log_text(text = log_texts)
             
         # # Calculate the metrics
-        # # bleu_batch = self.bleu(decoded_sentence, targets)
-        # chrf_batch = self.chrf(decoded_sentence, targets)
+        rouge_score = self.rouge_score(decoded_sentence, targets)
 
-        # # self.bleu_scores.append(bleu_batch)
-        # self.chrf_scores.append(chrf_batch)
+        self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
+        self.log('rouge_score', rouge_score, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
+
         return {'val_loss': loss}    
 
 
-    def on_validation_epoch_end(self):
-        # Calculate averages of metrics over the entire epoch
-        avg_loss = torch.stack(self.losses).mean()
-        # avg_bleu = torch.stack(self.bleu_scores).mean()
-        # avg_chrf = torch.stack(self.chrf_scores).mean()
+    # def on_validation_epoch_end(self):
+    #     # Calculate averages of metrics over the entire epoch
+    #     avg_loss = torch.stack(self.losses).mean()
+    #     # avg_bleu = torch.stack(self.bleu_scores).mean()
+    #     # avg_chrf = torch.stack(self.chrf_scores).mean()
 
-        # Log all metrics using log_dict
-        metrics = {
-            'val_loss': avg_loss,
-            # 'val_bleu': avg_bleu,
-            # 'val_chrf': avg_chrf
-        }
+    #     # Log all metrics using log_dict
+    #     metrics = {
+    #         'val_loss': avg_loss,
+    #     }
 
-        self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
+    #     self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
 
-        # Clear the lists for the next epoch
-        self.losses.clear()
-        # self.bleu_scores.clear()
-        # self.chrf_scores.clear()
+    #     # Clear the lists for the next epoch
+    #     self.losses.clear()
     
     def _decode(self, decoded_output):
         # Turn back to sentence
@@ -175,6 +170,7 @@ def main(args):
 
     data_module.setup()
 
+    # Save the vocabs
     data_module.input_lang.save_to_file("input_vocab.json", input=True)
     data_module.output_lang.save_to_file("output_vocab.json", input=False)
 
