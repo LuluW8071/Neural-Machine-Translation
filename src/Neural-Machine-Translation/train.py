@@ -9,7 +9,8 @@ import torch.nn as nn
 
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
-from torchmetrics.text.rouge import ROUGEScore
+# from torchmetrics.text.rouge import ROUGEScore
+from torchmetrics.text import BLEUScore
 
 # Load API
 from dotenv import load_dotenv
@@ -30,20 +31,15 @@ class NMTTrainer(pl.LightningModule):
         self.input_lang = data_module.input_lang
         self.output_lang = data_module.output_lang
 
-        self.losses = []
-        self.rouge_scores = []
-
         # Loss fn and Metrics
+        self.losses, self.bigram_bleu_scores = [], []
         self.loss_fn = nn.CrossEntropyLoss()
-        self.rouge_score = ROUGEScore(
-            rouge_keys=("rouge2", "rougeL"), 
-            use_stemmer=True if self.output_lang == 'en' else False
-        )
+        self.bigram_bleu = BLEUScore(n_gram=2, smooth=True)
+        # self.trigram_bleu = BLEUScore(n_gram=3, smooth=True)
 
         # Precompute sync_dist for distributed GPUs train
         self.sync_dist = True if args.gpus > 1 else False
 
-    
     def forward(self, input_tensor, target_tensor):
         return self.model(input_tensor, target_tensor)
 
@@ -86,51 +82,61 @@ class NMTTrainer(pl.LightningModule):
         loss, _ = self._common_step(batch, batch_idx)
 
         # Log train_loss in the logger
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=self.sync_dist)
+        self.log('train_loss', loss, on_step=True, on_epoch=False, prog_bar=True, logger=True, sync_dist=self.sync_dist)
 
         return loss
+
 
     def validation_step(self, batch, batch_idx):
         # Unpack batch
         input_tensors, target_tensors = batch
 
+        # Compute loss and decoded outputs
         loss, decoded_output = self._common_step(batch, batch_idx)
-        # self.losses.append(loss)
+        self.losses.append(loss)
 
         # Decode the outputs
         decoded_sentence = self._decode(decoded_output)
+
+        # Compute sources and targets
         source = [utils.sentenceFromIndexes(self.input_lang, input_tensor.tolist()) for input_tensor in input_tensors]
         targets = [utils.sentenceFromIndexes(self.output_lang, target_tensor.tolist()) for target_tensor in target_tensors]
 
-        if batch_idx % 32 == 0:
-            log_source, log_targets = source[-1], targets[-1]
-            log_texts = f"{log_source}\n> {log_targets}\n= {decoded_sentence[-1]}\n\n"
-            self.logger.experiment.log_text(text = log_texts)
-            
-        # # Calculate the metrics
-        rouge_score = self.rouge_score(decoded_sentence, targets)
 
-        self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
-        self.log('rouge_score', rouge_score, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
+        # Log example translations
+        if batch_idx % 64 == 0:
+            log_source, log_targets, log_translated = source[0], targets[0], decoded_sentence[0]
+            log_texts = f"{log_source}\n> {log_targets}\n= {log_translated}"
+            self.logger.experiment.log_text(text=log_texts)
 
-        return {'val_loss': loss}    
+        # Calculate metrics
+        bigram_bleu_batch = self.bigram_bleu(decoded_sentence, [targets])
+        # trigram_bleu_batch = self.trigram_bleu(decoded_sentence, [targets])
 
+        self.bigram_bleu_scores.append(bigram_bleu_batch)
+        # self.trigram_bleu_scores.append(trigram_bleu_batch)
 
-    # def on_validation_epoch_end(self):
-    #     # Calculate averages of metrics over the entire epoch
-    #     avg_loss = torch.stack(self.losses).mean()
-    #     # avg_bleu = torch.stack(self.bleu_scores).mean()
-    #     # avg_chrf = torch.stack(self.chrf_scores).mean()
+        return {'val_loss': loss}
+    
+    def on_validation_epoch_end(self):
+        # Avg. loss and metrics
+        avg_loss = torch.stack(self.losses).mean()
+        avg_bi_bleu = torch.stack(self.bigram_bleu_scores).mean()
+        # avg_tri_bleu = torch.stack(self.trigram_bleu_scores).mean()
 
-    #     # Log all metrics using log_dict
-    #     metrics = {
-    #         'val_loss': avg_loss,
-    #     }
+        # Log avg. loss and metrics
+        metrics = {
+            "val_loss": avg_loss,
+            "bi_bleu": avg_bi_bleu,
+            # "tri_bleu": avg_tri_bleu,
+        }
 
-    #     self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
+        self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
 
-    #     # Clear the lists for the next epoch
-    #     self.losses.clear()
+        self.losses.clear()
+        self.bigram_bleu_scores.clear()
+        # self.trigram_bleu_scores.clear()
+        
     
     def _decode(self, decoded_output):
         # Turn back to sentence
@@ -178,17 +184,17 @@ def main(args):
     h_params = {
         "input_size": data_module.input_lang.n_words,
         "output_size": data_module.output_lang.n_words,
-        "hidden_size": 256,
-        "num_layers": 2,
+        "hidden_size": args.hidden_size,
+        "num_layers": args.num_layers,
         "max_len": args.max_len,
-        "bidirection": True,
+        "bidirection": args.bidirection,
         "dropout_rate": 0.1,
         "device": args.device
     }
 
     model = NMTModel(**h_params)
-
     model = torch.compile(model)
+
     nmt_trainer = NMTTrainer(model, data_module, args)
 
     # Initialize the trainer
@@ -216,7 +222,6 @@ def main(args):
         'precision': args.precision,                                    # Precision to use for training
         'check_val_every_n_epoch': 1,                                   # No. of epochs to run validation
         'gradient_clip_val': args.grad_clip,                            # Gradient norm clipping value
-        'accumulate_grad_batches': args.accumulate_grad,                # No. of batches to accumulate gradients over
         'callbacks': [LearningRateMonitor(logging_interval='epoch'),    # Callbacks to use for training
                       EarlyStopping(monitor="val_loss", patience=5),
                       checkpoint_callback],
@@ -225,6 +230,9 @@ def main(args):
 
     if args.gpus > 1:
         trainer_args['strategy'] = args.dist_backend
+        
+    if args.acc_grad > 1:
+        trainer_args['accumulate_grad_batches'] = args.acc_grad
 
     trainer = pl.Trainer(**trainer_args)
 
@@ -239,22 +247,28 @@ if __name__ == '__main__':
     parser.add_argument('-d', '--device', default='cuda', type=str, help='device to use for training')
     parser.add_argument('-g', '--gpus', default=1, type=int, help='number of gpus per node')
     parser.add_argument('-w', '--num_workers', default=8, type=int, help='n data loading workers')
-    parser.add_argument('-db', '--dist_backend', default='ddp', type=str, help='which distributed backend to use for aggregating multi-gpu train')
+    parser.add_argument('-db', '--dist_backend', default='ddp_find_unused_parameters_true', type=str, help='which distributed backend to use for aggregating multi-gpu train')
 
     # Dataset Configuration
     parser.add_argument('--file_path', default=None, required=True, type=str, help='csv file to load training data')
     parser.add_argument('--input_lang', default='en', type=str, help='source language')
-    parser.add_argument('--output_lang', default='nep', type=str, help='target language')
-    parser.add_argument('--reverse', default=False, action='store_true', help='whether to reverse source and target languages')
+    parser.add_argument('--output_lang', default='np', type=str, help='target language')
+    parser.add_argument('--reverse', action='store_true', help='Whether to reverse source and target languages')
     parser.add_argument('--max_len', default=12, type=int, help='maximum sequence length')
     parser.add_argument('--seed', default=42, type=int, help='seed for reproducibility')
+
+
+    # Model HyperParameters
+    parser.add_argument('-hs','--hidden_size', default=128, type=int, help='model hidden size')
+    parser.add_argument('-nl', '--num_layers', default=2, type=int, help='number of layers')
+    parser.add_argument('-bd', '--bidirection', action='store_true', help='whether to use bidirectional model')
 
     # General Train Hyperparameters
     parser.add_argument('--epochs', default=20, type=int, help='number of total epochs to run')
     parser.add_argument('--batch_size', default=32, type=int, help='size of batch')
     
     parser.add_argument('-lr','--learning_rate', default=2e-3, type=float, help='learning rate')
-    parser.add_argument('-lrf', '--lr_factor', default=0.5, type=float, help='learning rate factor for decay')
+    parser.add_argument('-lrf', '--lr_factor', default=0.6, type=float, help='learning rate factor for decay')
     parser.add_argument('-lrp', '--lr_patience', default=1, type=int, help='learning rate patience for decay')
     parser.add_argument('-mlt', '--min_lr_threshold', default=5e-3, type=float, help='minimum learning rate threshold')
     parser.add_argument('-mlr', '--min_lr', default=5e-6, type=float, help='minimum learning rate')
@@ -262,7 +276,7 @@ if __name__ == '__main__':
     parser.add_argument('--precision', default='32-true', type=str, help='precision')
     parser.add_argument('--checkpoint_path', default=None, type=str, help='path of checkpoint file to resume training')
     parser.add_argument('-gc', '--grad_clip', default=1.0, type=float, help='gradient norm clipping value')
-    parser.add_argument('-ag', '--accumulate_grad', default=2, type=int, help='number of batches to accumulate gradients over')
+    parser.add_argument('-ag', '--acc_grad', default=2, type=int, help='number of batches to accumulate gradients over')
 
     args = parser.parse_args()
     main(args)

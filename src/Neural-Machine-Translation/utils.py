@@ -71,10 +71,15 @@ class WordVocabulary:
 # NOTE: Might need change in the pre processing of strings as per language used
 def normalize_String(s):
     s = s.lower().strip()
-    # Add spaces behind punctuation
-    s = re.sub(r"([.!?।])", r" \1", s)
-    # Retain Devanagari, English & Latin characters and punctuation
-    s = re.sub(r"[^\u0900-\u097Fa-zA-Z0-9.!?']+", r" ", s)
+    # Replace multiple punctuation marks (e.g., "..", "...") with a single punctuation mark
+    s = re.sub(r"([.!?।])\1+", r"", s)
+    
+    # Add a space before single punctuation marks (if not already present) and ensure they are spaced correctly
+    s = re.sub(r"(?<! )([.!?।])", r" \1", s)
+    
+    # Retain Devanagari, English & Latin characters and punctuation, replace others with a space
+    s = re.sub(r"[^\u0900-\u097Fa-zA-Z0-9.!?]+", r" ", s)
+    
     return s
 
 

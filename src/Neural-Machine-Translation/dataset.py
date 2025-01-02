@@ -35,6 +35,7 @@ class PrepData(Dataset):
         # Normalize and optionally reverse pairs
         self.pairs = [[utils.normalize_String(s) for s in line] for line in lines]
         if reverse:
+            logger.info("Reversing targets")
             self.pairs = [list(reversed(p)) for p in self.pairs]
 
         # Initialize language vocabularies
@@ -89,7 +90,7 @@ class NMTDataModule(pl.LightningDataModule):
         prep_data = PrepData(self.file_path, self.lang1, self.lang2, self.reverse)
         self.input_lang, self.output_lang = prep_data.get_languages()
         pairs = utils.filterPairs(prep_data.pairs, self.max_len)
-
+        
         logger.info(f"Read {len(prep_data)} sentence pairs")
         logger.info(f"Trimmed to {len(pairs)} sentence pairs")
 

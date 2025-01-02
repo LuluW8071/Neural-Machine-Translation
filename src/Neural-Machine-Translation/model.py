@@ -1,6 +1,7 @@
 import torch.nn as nn
 from models.gru import Encoder, Decoder
 
+
 class NMTModel(nn.Module):
     def __init__(self, input_size, output_size, hidden_size, num_layers, max_len, bidirection=True, dropout_rate=0.1, device="cpu"):
         super(NMTModel, self).__init__()
