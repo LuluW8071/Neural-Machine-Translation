@@ -9,8 +9,7 @@ import torch.nn as nn
 
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
-# from torchmetrics.text.rouge import ROUGEScore
-from torchmetrics.text import BLEUScore
+from torchmetrics.text import  SacreBLEUScore
 
 # Load API
 from dotenv import load_dotenv
@@ -20,7 +19,7 @@ import utils
 
 from dataset import NMTDataModule
 from model import NMTModel
-from logger import logger as log
+
 
 class NMTTrainer(pl.LightningModule):
     def __init__(self, model, data_module, args):
@@ -32,17 +31,19 @@ class NMTTrainer(pl.LightningModule):
         self.output_lang = data_module.output_lang
 
         # Loss fn and Metrics
-        self.losses, self.bigram_bleu_scores = [], []
+        self.val_losses = []
+        self.bigram_bleu_scores, self.test_bigram_bleu_scores = [], []
+        self.quadgram_bleu_scores, self.test_quadgram_bleu_scores = [], []
+
         self.loss_fn = nn.CrossEntropyLoss()
-        self.bigram_bleu = BLEUScore(n_gram=2, smooth=True)
-        # self.trigram_bleu = BLEUScore(n_gram=3, smooth=True)
+        self.bigram_sacbleu = SacreBLEUScore(n_gram=2, smooth=True, tokenize='13a')
+        self.quadgram_sacbleu = SacreBLEUScore(n_gram=4, smooth=True, tokenize='13a')
 
         # Precompute sync_dist for distributed GPUs train
         self.sync_dist = True if args.gpus > 1 else False
 
     def forward(self, input_tensor, target_tensor):
         return self.model(input_tensor, target_tensor)
-
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(
@@ -77,7 +78,6 @@ class NMTTrainer(pl.LightningModule):
         loss = self.loss_fn(decoder_out.view(-1, decoder_out.size(-1)), target_tensor.view(-1))
         return loss, decoder_out
 
-
     def training_step(self, batch, batch_idx):
         loss, _ = self._common_step(batch, batch_idx)
 
@@ -86,60 +86,94 @@ class NMTTrainer(pl.LightningModule):
 
         return loss
 
-
     def validation_step(self, batch, batch_idx):
         # Unpack batch
         input_tensors, target_tensors = batch
 
         # Compute loss and decoded outputs
         loss, decoded_output = self._common_step(batch, batch_idx)
-        self.losses.append(loss)
+        self.val_losses.append(loss)
 
-        # Decode the outputs
-        decoded_sentence = self._decode(decoded_output)
+        # Decode the outputs and targets for metric calculations
+        decoded_sentences = self._decode(decoded_output)
+        targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensors]
 
-        # Compute sources and targets
-        source = [utils.sentenceFromIndexes(self.input_lang, input_tensor.tolist()) for input_tensor in input_tensors]
-        targets = [utils.sentenceFromIndexes(self.output_lang, target_tensor.tolist()) for target_tensor in target_tensors]
-
-
-        # Log example translations
-        if batch_idx % 64 == 0:
-            log_source, log_targets, log_translated = source[0], targets[0], decoded_sentence[0]
-            log_texts = f"{log_source}\n> {log_targets}\n= {log_translated}"
-            self.logger.experiment.log_text(text=log_texts)
+        self._text_logger(batch_idx, input_tensors, targets, decoded_sentences, phase="Validation")
 
         # Calculate metrics
-        bigram_bleu_batch = self.bigram_bleu(decoded_sentence, [targets])
-        # trigram_bleu_batch = self.trigram_bleu(decoded_sentence, [targets])
+        bigram_bleu_batch = self.bigram_sacbleu(decoded_sentences, [targets])
+        quadgram_bleu_batch = self.quadgram_sacbleu(decoded_sentences, [targets])
 
         self.bigram_bleu_scores.append(bigram_bleu_batch)
-        # self.trigram_bleu_scores.append(trigram_bleu_batch)
+        self.quadgram_bleu_scores.append(quadgram_bleu_batch)
 
         return {'val_loss': loss}
     
     def on_validation_epoch_end(self):
         # Avg. loss and metrics
-        avg_loss = torch.stack(self.losses).mean()
+        avg_val_loss = torch.stack(self.val_losses).mean()
         avg_bi_bleu = torch.stack(self.bigram_bleu_scores).mean()
-        # avg_tri_bleu = torch.stack(self.trigram_bleu_scores).mean()
+        avg_quad_bleu = torch.stack(self.quadgram_bleu_scores).mean()
 
         # Log avg. loss and metrics
         metrics = {
-            "val_loss": avg_loss,
+            "val_loss": avg_val_loss,
             "bi_bleu": avg_bi_bleu,
-            # "tri_bleu": avg_tri_bleu,
+            "quad_bleu": avg_quad_bleu
         }
 
         self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
 
-        self.losses.clear()
+        self.val_losses.clear()
         self.bigram_bleu_scores.clear()
-        # self.trigram_bleu_scores.clear()
-        
-    
+        self.quadgram_bleu_scores.clear()
+
+    def test_step(self, batch, batch_idx):
+        # Unpack batch
+        input_tensors, target_tensors = batch
+
+        # Compute decoded outputs without teacher forcing
+        decoded_output, _ = self.forward(input_tensors)
+
+        # Decode outputs and targets
+        decoded_sentences = self._decode(decoded_output)
+        targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensors]
+
+        # Log a few examples for analysis
+        self._text_logger(batch_idx, input_tensors, targets, decoded_sentences, phase="Test")
+
+        # Calculate BLEU and other metrics
+        bigram_bleu_score = self.bigram_sacbleu(decoded_sentences, [targets])
+        quadgram_bleu_score = self.quadgram_sacbleu(decoded_sentences, [targets])
+
+        self.test_bigram_bleu_scores.append(bigram_bleu_score)
+        self.test_quadgram_bleu_scores.append(quadgram_bleu_score)
+
+        return {
+            "bigram_bleu": bigram_bleu_score,
+            "quadgram_bleu": quadgram_bleu_score
+        }
+
+    def on_test_epoch_end(self):
+        # Calculate average metrics across test set
+        avg_bi_bleu = torch.stack(self.test_bigram_bleu_scores).mean()
+        avg_quad_bleu = torch.stack(self.test_quadgram_bleu_scores).mean()
+
+        # Log metrics
+        metrics = {
+            "test_bigram_bleu": avg_bi_bleu,
+            "test_quad_bleu": avg_quad_bleu
+        }
+
+        self.log_dict(metrics, on_epoch=True, prog_bar=True, logger=True)
+
+        # Clear metric lists
+        self.test_bigram_bleu_scores.clear()
+        self.test_quad_bleu_scores.clear()
+
+
     def _decode(self, decoded_output):
-        # Turn back to sentence
+        # Turn outputs back to sentence
         _, topi = decoded_output.topk(1)
         decoded_ids = topi.squeeze().tolist()
 
@@ -152,10 +186,28 @@ class NMTTrainer(pl.LightningModule):
                     break
                 decoded_words.append(self.output_lang.index2word[idx])
             sentence = ' '.join(decoded_words)
-            batch_sentences.append(sentence)    # Add the sentence to the batch list
+            batch_sentences.append(sentence)
 
         return batch_sentences
     
+    def _text_logger(self, batch_idx, input_tensors, target_tensors, decoded_sentences, phase):
+        # Log source, target, and translations
+        if batch_idx % 256 == 0:
+            log_texts = []
+
+            for i in range(8):
+                log_source = utils.sentenceFromIndexes(self.input_lang, input_tensors[i].tolist())
+                log_target, log_translated = target_tensors[i], decoded_sentences[i]
+
+                log_text = f"{log_source}\n> {log_target}\n= {log_translated}"
+                log_texts.append(log_text)
+
+            combined_logs = "\n\n".join(log_texts)
+            self.logger.experiment.log_text(
+                text=combined_logs, 
+                metadata={"Phase": phase}
+            )
+
 
 def main(args):
     # Set seed for reproducibility
@@ -169,6 +221,7 @@ def main(args):
         split_ratio=0.8,                # Train-test split
         batch_size=args.batch_size,     # Batch size
         max_len=args.max_len,           # Maximum sequence length
+        min_len=args.min_len,           # Minimum sequence length
         num_workers=args.num_workers,   # DataLoader workers
         seed=args.seed,                 # Random seed
         reverse=args.reverse            # Whether to reverse the language pairs
@@ -187,7 +240,7 @@ def main(args):
         "hidden_size": args.hidden_size,
         "num_layers": args.num_layers,
         "max_len": args.max_len,
-        "bidirection": args.bidirection,
+        "bidirection": True,
         "dropout_rate": 0.1,
         "device": args.device
     }
@@ -207,8 +260,8 @@ def main(args):
     checkpoint_callback = ModelCheckpoint(
         monitor='val_loss',
         dirpath="./saved_checkpoint/",       
-        filename='nmt-{epoch:02d}-{val_loss:.3f}',                                             
-        save_top_k=3,
+        filename='nmt-{epoch:02d}-{val_loss:.3f}-{test_quad_bleu:.3f}',                                             
+        save_top_k=2,
         mode='min',
         save_weights_only=True
     )
@@ -223,7 +276,7 @@ def main(args):
         'check_val_every_n_epoch': 1,                                   # No. of epochs to run validation
         'gradient_clip_val': args.grad_clip,                            # Gradient norm clipping value
         'callbacks': [LearningRateMonitor(logging_interval='epoch'),    # Callbacks to use for training
-                      EarlyStopping(monitor="val_loss", patience=5),
+                      EarlyStopping(monitor="val_loss", patience=4),
                       checkpoint_callback],
         'logger': comet_logger                                        # Logger to use for training
     }
@@ -238,7 +291,7 @@ def main(args):
 
     trainer.fit(nmt_trainer, data_module, ckpt_path=args.checkpoint_path)
     trainer.validate(nmt_trainer, data_module)
-
+    trainer.test(nmt_trainer, data_module)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -247,7 +300,7 @@ if __name__ == '__main__':
     parser.add_argument('-d', '--device', default='cuda', type=str, help='device to use for training')
     parser.add_argument('-g', '--gpus', default=1, type=int, help='number of gpus per node')
     parser.add_argument('-w', '--num_workers', default=8, type=int, help='n data loading workers')
-    parser.add_argument('-db', '--dist_backend', default='ddp_find_unused_parameters_true', type=str, help='which distributed backend to use for aggregating multi-gpu train')
+    parser.add_argument('-db', '--dist_backend', default='ddp', type=str, help='which distributed backend to use for aggregating multi-gpu train')
 
     # Dataset Configuration
     parser.add_argument('--file_path', default=None, required=True, type=str, help='csv file to load training data')
@@ -255,6 +308,7 @@ if __name__ == '__main__':
     parser.add_argument('--output_lang', default='np', type=str, help='target language')
     parser.add_argument('--reverse', action='store_true', help='Whether to reverse source and target languages')
     parser.add_argument('--max_len', default=12, type=int, help='maximum sequence length')
+    parser.add_argument('--min_len', default=2, type=int, help='minimum sequence length')
     parser.add_argument('--seed', default=42, type=int, help='seed for reproducibility')
 
 
@@ -270,7 +324,7 @@ if __name__ == '__main__':
     parser.add_argument('-lr','--learning_rate', default=2e-3, type=float, help='learning rate')
     parser.add_argument('-lrf', '--lr_factor', default=0.6, type=float, help='learning rate factor for decay')
     parser.add_argument('-lrp', '--lr_patience', default=1, type=int, help='learning rate patience for decay')
-    parser.add_argument('-mlt', '--min_lr_threshold', default=5e-3, type=float, help='minimum learning rate threshold')
+    parser.add_argument('-mlt', '--min_lr_threshold', default=1e-2, type=float, help='minimum learning rate threshold')
     parser.add_argument('-mlr', '--min_lr', default=5e-6, type=float, help='minimum learning rate')
 
     parser.add_argument('--precision', default='32-true', type=str, help='precision')
