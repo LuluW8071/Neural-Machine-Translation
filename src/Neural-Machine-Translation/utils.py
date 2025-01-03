@@ -83,10 +83,14 @@ def normalize_String(s):
     return s
 
 
-def filterPairs(pairs, max_len):
-    """ Filter pairs of sentences with length greater than max_len """
-    MAX_LENGTH = max_len
-    return [pair for pair in pairs if (len(pair[0].split(' ')) < MAX_LENGTH and len(pair[1].split(' ')) < MAX_LENGTH)]
+def filterPairs(pairs, max_len, min_len):
+    """ Filter pairs of sentences with length greater than max_len and less than min_len """
+    MAX_LENGTH, MIN_LENGTH = max_len, min_len
+    return [
+        pair for pair in pairs
+        if (len(pair[0].split(' ')) >= MIN_LENGTH and len(pair[1].split(' ')) >= MIN_LENGTH) and
+        (len(pair[0].split(' ')) < MAX_LENGTH and len(pair[1].split(' ')) < MAX_LENGTH)
+    ]
 
 
 def indexesFromSentence(lang, sentence):
