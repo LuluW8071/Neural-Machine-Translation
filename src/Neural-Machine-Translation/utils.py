@@ -124,7 +124,9 @@ def set_seed(seed):
     """Set seed for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True  # Make the results deterministic
-    torch.backends.cudnn.benchmark = False     # Disable auto-tuner to ensure deterministic behavior
+
+    # NOTE: Commented reproducibility seeding due to teacher forcing probablity in the model
+    # torch.manual_seed(seed)
+    # torch.cuda.manual_seed(seed)
+    # torch.backends.cudnn.deterministic = True  # Make the results deterministic
+    # torch.backends.cudnn.benchmark = False     # Disable auto-tuner to ensure deterministic behavior

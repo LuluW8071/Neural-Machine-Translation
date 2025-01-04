@@ -128,13 +128,10 @@ class NMTDataModule(pl.LightningDataModule):
         test_size = len(dataset) - train_size
         self.train_dataset, self.test_dataset = random_split(dataset, [train_size, test_size])
 
-        self.train_sampler = RandomSampler(self.train_dataset)
-        self.test_sampler = SequentialSampler(self.test_dataset)
-
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
-            sampler=self.train_sampler,
+            shuffle=True,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True
@@ -143,7 +140,7 @@ class NMTDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.test_dataset,
-            sampler=self.test_sampler,
+            shuffle=False,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True
@@ -151,4 +148,10 @@ class NMTDataModule(pl.LightningDataModule):
     
     def test_dataloader(self):
         # NOTE: Used same val_dataloader for final_test without teacher forcing
-        return self.val_dataloader()
+        return DataLoader(
+            self.test_dataset,
+            shuffle=False,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True
+        )
