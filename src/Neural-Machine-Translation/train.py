@@ -32,8 +32,8 @@ class NMTTrainer(pl.LightningModule):
 
         # Loss fn and Metrics
         self.val_losses = []
-        self.bigram_bleu_scores, self.test_bigram_bleu_scores = [], []
-        self.quadgram_bleu_scores, self.test_quadgram_bleu_scores = [], []
+        self.bigram_bleu_scores = []
+        self.quadgram_bleu_scores = []
 
         self.loss_fn = nn.CrossEntropyLoss()
         self.bigram_sacbleu = SacreBLEUScore(n_gram=2, smooth=True, tokenize='13a')
@@ -70,16 +70,17 @@ class NMTTrainer(pl.LightningModule):
         }
         return [optimizer], [scheduler]
 
+
     def _common_step(self, batch, batch_idx):
-        # Unpack batch
         input_tensor, target_tensor = batch
         decoder_out, _ = self.forward(input_tensor, target_tensor)
 
         loss = self.loss_fn(decoder_out.view(-1, decoder_out.size(-1)), target_tensor.view(-1))
-        return loss, decoder_out
+
+        return loss, decoder_out, input_tensor, target_tensor
 
     def training_step(self, batch, batch_idx):
-        loss, _ = self._common_step(batch, batch_idx)
+        loss, _, _, _ = self._common_step(batch, batch_idx)
 
         # Log train_loss in the logger
         self.log('train_loss', loss, on_step=True, on_epoch=False, prog_bar=True, logger=True, sync_dist=self.sync_dist)
@@ -87,18 +88,18 @@ class NMTTrainer(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        # Unpack batch
-        input_tensors, target_tensors = batch
-
-        # Compute loss and decoded outputs
-        loss, decoded_output = self._common_step(batch, batch_idx)
+        # NOTE: Adopting teacher forcing to account for variable length to prevent overfitting
+        # In validation, teacher forcing should not be done as it should simulate real-world examples
+        # Constructed a test_step to simulate without teacher forcing using the same dataloader as in validation_step 
+        loss, decoder_out, input_tensor, target_tensor = self._common_step(batch, batch_idx)
         self.val_losses.append(loss)
 
         # Decode the outputs and targets for metric calculations
-        decoded_sentences = self._decode(decoded_output)
-        targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensors]
-
-        self._text_logger(batch_idx, input_tensors, targets, decoded_sentences, phase="Validation")
+        decoded_sentences = self._decode(decoder_out)
+        targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensor]
+        
+        if batch_idx % 256 == 0:
+            self._text_logger(batch_idx, input_tensor, targets, decoded_sentences, phase="Validation")
 
         # Calculate metrics
         bigram_bleu_batch = self.bigram_sacbleu(decoded_sentences, [targets])
@@ -129,47 +130,30 @@ class NMTTrainer(pl.LightningModule):
         self.quadgram_bleu_scores.clear()
 
     def test_step(self, batch, batch_idx):
-        # Unpack batch
-        input_tensors, target_tensors = batch
-
-        # Compute decoded outputs without teacher forcing
-        decoded_output, _ = self.forward(input_tensors)
+        input_tensor, target_tensor = batch
+        # Validation step without teacher forcing
+        decoder_out, _ = self.forward(input_tensor, None)
 
         # Decode outputs and targets
-        decoded_sentences = self._decode(decoded_output)
-        targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensors]
+        decoded_sentences = self._decode(decoder_out)
+        targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensor]
 
         # Log a few examples for analysis
-        self._text_logger(batch_idx, input_tensors, targets, decoded_sentences, phase="Test")
+        if batch_idx % 128 == 0:
+            self._text_logger(batch_idx, input_tensor, targets, decoded_sentences, phase="Test")
 
         # Calculate BLEU and other metrics
         bigram_bleu_score = self.bigram_sacbleu(decoded_sentences, [targets])
         quadgram_bleu_score = self.quadgram_sacbleu(decoded_sentences, [targets])
 
-        self.test_bigram_bleu_scores.append(bigram_bleu_score)
-        self.test_quadgram_bleu_scores.append(quadgram_bleu_score)
-
-        return {
-            "bigram_bleu": bigram_bleu_score,
-            "quadgram_bleu": quadgram_bleu_score
-        }
-
-    def on_test_epoch_end(self):
-        # Calculate average metrics across test set
-        avg_bi_bleu = torch.stack(self.test_bigram_bleu_scores).mean()
-        avg_quad_bleu = torch.stack(self.test_quadgram_bleu_scores).mean()
-
-        # Log metrics
         metrics = {
-            "test_bigram_bleu": avg_bi_bleu,
-            "test_quad_bleu": avg_quad_bleu
-        }
+                    "test_bigram_bleu": bigram_bleu_score,
+                    "test_quad_bleu": quadgram_bleu_score
+                }
+        
+        self.log_dict(metrics, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
 
-        self.log_dict(metrics, on_epoch=True, prog_bar=True, logger=True)
-
-        # Clear metric lists
-        self.test_bigram_bleu_scores.clear()
-        self.test_quad_bleu_scores.clear()
+        return metrics
 
 
     def _decode(self, decoded_output):
@@ -192,21 +176,20 @@ class NMTTrainer(pl.LightningModule):
     
     def _text_logger(self, batch_idx, input_tensors, target_tensors, decoded_sentences, phase):
         # Log source, target, and translations
-        if batch_idx % 256 == 0:
-            log_texts = []
+        log_texts = []
 
-            for i in range(8):
-                log_source = utils.sentenceFromIndexes(self.input_lang, input_tensors[i].tolist())
-                log_target, log_translated = target_tensors[i], decoded_sentences[i]
+        for i in range(16):
+            log_source = utils.sentenceFromIndexes(self.input_lang, input_tensors[i].tolist())
+            log_target, log_translated = target_tensors[i], decoded_sentences[i]
 
-                log_text = f"{log_source}\n> {log_target}\n= {log_translated}"
-                log_texts.append(log_text)
+            log_text = f"{log_source}\n> {log_target}\n= {log_translated}"
+            log_texts.append(log_text)
 
-            combined_logs = "\n\n".join(log_texts)
-            self.logger.experiment.log_text(
-                text=combined_logs, 
-                metadata={"Phase": phase}
-            )
+        combined_logs = "\n\n".join(log_texts)
+        self.logger.experiment.log_text(
+            text=combined_logs, 
+            metadata={"Phase": phase}
+        )
 
 
 def main(args):
@@ -241,7 +224,7 @@ def main(args):
         "num_layers": args.num_layers,
         "max_len": args.max_len,
         "bidirection": True,
-        "dropout_rate": 0.1,
+        "dropout_rate": 0.3,
         "device": args.device
     }
 

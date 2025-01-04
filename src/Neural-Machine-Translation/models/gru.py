@@ -67,8 +67,8 @@ class Decoder(nn.Module):
             decoder_output, decoder_hidden = self.forward_step(decoder_input, decoder_hidden)
             decoder_outputs.append(decoder_output)
 
-            if target_tensor is not None:
-                # Teacher forcing: Feed the target as the next input
+            if target_tensor is not None and torch.rand(1) > 0.3: 
+                # Teacher forcing: Feed the target as the next input(70% chance)
                 decoder_input = target_tensor[:, i].unsqueeze(1)
             else:
                 # Without teacher forcing: use its own predictions as the next input
