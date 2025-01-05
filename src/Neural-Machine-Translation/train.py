@@ -9,7 +9,7 @@ import torch.nn as nn
 
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
-from torchmetrics.text import BLEUScore, CHRFScore
+from torchmetrics.text import  SacreBLEUScore
 
 # Load API
 from dotenv import load_dotenv
@@ -19,7 +19,7 @@ import utils
 
 from dataset import NMTDataModule
 from model import NMTModel
-from logger import logger as log
+
 
 class NMTTrainer(pl.LightningModule):
     def __init__(self, model, data_module, args):
@@ -30,23 +30,20 @@ class NMTTrainer(pl.LightningModule):
         self.input_lang = data_module.input_lang
         self.output_lang = data_module.output_lang
 
-        self.losses = []
-        self.bleu_scores, self.chrf_scores = [], []
+        # Loss fn and Metrics
+        self.val_losses = []
+        self.bigram_bleu_scores = []
+        self.quadgram_bleu_scores = []
 
-        # Metrics
-        # self.bleu = BLEUScore(n_gram=1, smooth=False)
-        self.chrf = CHRFScore()
-
-        # Ignore padding when computing loss)
         self.loss_fn = nn.CrossEntropyLoss()
+        self.bigram_sacbleu = SacreBLEUScore(n_gram=2, smooth=True, tokenize='13a')
+        self.quadgram_sacbleu = SacreBLEUScore(n_gram=4, smooth=True, tokenize='13a')
 
         # Precompute sync_dist for distributed GPUs train
         self.sync_dist = True if args.gpus > 1 else False
 
-    
     def forward(self, input_tensor, target_tensor):
         return self.model(input_tensor, target_tensor)
-
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(
@@ -73,72 +70,94 @@ class NMTTrainer(pl.LightningModule):
         }
         return [optimizer], [scheduler]
 
+
     def _common_step(self, batch, batch_idx):
-        # Unpack batch
         input_tensor, target_tensor = batch
         decoder_out, _ = self.forward(input_tensor, target_tensor)
 
         loss = self.loss_fn(decoder_out.view(-1, decoder_out.size(-1)), target_tensor.view(-1))
-        return loss, decoder_out
 
+        return loss, decoder_out, input_tensor, target_tensor
 
     def training_step(self, batch, batch_idx):
-        loss, _ = self._common_step(batch, batch_idx)
+        loss, _, _, _ = self._common_step(batch, batch_idx)
 
         # Log train_loss in the logger
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('train_loss', loss, on_step=True, on_epoch=False, prog_bar=True, logger=True, sync_dist=self.sync_dist)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
-        # Unpack batch
-        # input_tensors, target_tensors = batch
-        loss, decoded_output = self._common_step(batch, batch_idx)
-        self.losses.append(loss)
+        # NOTE: Adopting teacher forcing to account for variable length to prevent overfitting
+        # In validation, teacher forcing should not be done as it should simulate real-world examples
+        # Constructed a test_step to simulate without teacher forcing using the same dataloader as in validation_step 
+        loss, decoder_out, input_tensor, target_tensor = self._common_step(batch, batch_idx)
+        self.val_losses.append(loss)
 
-        # # Decode the outputs
-        # decoded_sentence = self._decode(decoded_output)
-        # source = [utils.sentenceFromIndexes(self.input_lang, input_tensor.tolist()) for input_tensor in input_tensors]
-        # targets = [utils.sentenceFromIndexes(self.output_lang, target_tensor.tolist()) for target_tensor in target_tensors]
+        # Decode the outputs and targets for metric calculations
+        decoded_sentences = self._decode(decoder_out)
+        targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensor]
         
-        # # print(source, targets, decoded_sentence, sep="\n", end="\n\n")
+        if batch_idx % 256 == 0:
+            self._text_logger(batch_idx, input_tensor, targets, decoded_sentences, phase="Validation")
 
-        # if batch_idx % 32 == 0:
-        #     log_source, log_targets = source[-1], targets[-1]
-        #     log_texts = f"{log_source}\n> {log_targets}\n= {decoded_sentence[-1]}\n\n"
-        #     self.logger.experiment.log_text(text = log_texts)
-            
-        # # Calculate the metrics
-        # # bleu_batch = self.bleu(decoded_sentence, targets)
-        # chrf_batch = self.chrf(decoded_sentence, targets)
+        # Calculate metrics
+        bigram_bleu_batch = self.bigram_sacbleu(decoded_sentences, [targets])
+        quadgram_bleu_batch = self.quadgram_sacbleu(decoded_sentences, [targets])
 
-        # # self.bleu_scores.append(bleu_batch)
-        # self.chrf_scores.append(chrf_batch)
-        return {'val_loss': loss}    
+        self.bigram_bleu_scores.append(bigram_bleu_batch)
+        self.quadgram_bleu_scores.append(quadgram_bleu_batch)
 
-
+        return {'val_loss': loss}
+    
     def on_validation_epoch_end(self):
-        # Calculate averages of metrics over the entire epoch
-        avg_loss = torch.stack(self.losses).mean()
-        # avg_bleu = torch.stack(self.bleu_scores).mean()
-        # avg_chrf = torch.stack(self.chrf_scores).mean()
+        # Avg. loss and metrics
+        avg_val_loss = torch.stack(self.val_losses).mean()
+        avg_bi_bleu = torch.stack(self.bigram_bleu_scores).mean()
+        avg_quad_bleu = torch.stack(self.quadgram_bleu_scores).mean()
 
-        # Log all metrics using log_dict
+        # Log avg. loss and metrics
         metrics = {
-            'val_loss': avg_loss,
-            # 'val_bleu': avg_bleu,
-            # 'val_chrf': avg_chrf
+            "val_loss": avg_val_loss,
+            "bi_bleu": avg_bi_bleu,
+            "quad_bleu": avg_quad_bleu
         }
 
         self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
 
-        # Clear the lists for the next epoch
-        self.losses.clear()
-        # self.bleu_scores.clear()
-        # self.chrf_scores.clear()
-    
+        self.val_losses.clear()
+        self.bigram_bleu_scores.clear()
+        self.quadgram_bleu_scores.clear()
+
+    def test_step(self, batch, batch_idx):
+        input_tensor, target_tensor = batch
+        # Validation step without teacher forcing
+        decoder_out, _ = self.forward(input_tensor, None)
+
+        # Decode outputs and targets
+        decoded_sentences = self._decode(decoder_out)
+        targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensor]
+
+        # Log a few examples for analysis
+        if batch_idx % 128 == 0:
+            self._text_logger(batch_idx, input_tensor, targets, decoded_sentences, phase="Test")
+
+        # Calculate BLEU and other metrics
+        bigram_bleu_score = self.bigram_sacbleu(decoded_sentences, [targets])
+        quadgram_bleu_score = self.quadgram_sacbleu(decoded_sentences, [targets])
+
+        metrics = {
+                    "test_bigram_bleu": bigram_bleu_score,
+                    "test_quad_bleu": quadgram_bleu_score
+                }
+        
+        self.log_dict(metrics, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
+
+        return metrics
+
+
     def _decode(self, decoded_output):
-        # Turn back to sentence
+        # Turn outputs back to sentence
         _, topi = decoded_output.topk(1)
         decoded_ids = topi.squeeze().tolist()
 
@@ -151,10 +170,27 @@ class NMTTrainer(pl.LightningModule):
                     break
                 decoded_words.append(self.output_lang.index2word[idx])
             sentence = ' '.join(decoded_words)
-            batch_sentences.append(sentence)    # Add the sentence to the batch list
+            batch_sentences.append(sentence)
 
         return batch_sentences
     
+    def _text_logger(self, batch_idx, input_tensors, target_tensors, decoded_sentences, phase):
+        # Log source, target, and translations
+        log_texts = []
+
+        for i in range(16):
+            log_source = utils.sentenceFromIndexes(self.input_lang, input_tensors[i].tolist())
+            log_target, log_translated = target_tensors[i], decoded_sentences[i]
+
+            log_text = f"{log_source}\n> {log_target}\n= {log_translated}"
+            log_texts.append(log_text)
+
+        combined_logs = "\n\n".join(log_texts)
+        self.logger.experiment.log_text(
+            text=combined_logs, 
+            metadata={"Phase": phase}
+        )
+
 
 def main(args):
     # Set seed for reproducibility
@@ -168,6 +204,7 @@ def main(args):
         split_ratio=0.8,                # Train-test split
         batch_size=args.batch_size,     # Batch size
         max_len=args.max_len,           # Maximum sequence length
+        min_len=args.min_len,           # Minimum sequence length
         num_workers=args.num_workers,   # DataLoader workers
         seed=args.seed,                 # Random seed
         reverse=args.reverse            # Whether to reverse the language pairs
@@ -175,6 +212,7 @@ def main(args):
 
     data_module.setup()
 
+    # Save the vocabs
     data_module.input_lang.save_to_file("input_vocab.json", input=True)
     data_module.output_lang.save_to_file("output_vocab.json", input=False)
 
@@ -182,17 +220,17 @@ def main(args):
     h_params = {
         "input_size": data_module.input_lang.n_words,
         "output_size": data_module.output_lang.n_words,
-        "hidden_size": 256,
-        "num_layers": 2,
+        "hidden_size": args.hidden_size,
+        "num_layers": args.num_layers,
         "max_len": args.max_len,
         "bidirection": True,
-        "dropout_rate": 0.1,
+        "dropout_rate": 0.3,
         "device": args.device
     }
 
     model = NMTModel(**h_params)
-
     model = torch.compile(model)
+
     nmt_trainer = NMTTrainer(model, data_module, args)
 
     # Initialize the trainer
@@ -205,8 +243,8 @@ def main(args):
     checkpoint_callback = ModelCheckpoint(
         monitor='val_loss',
         dirpath="./saved_checkpoint/",       
-        filename='nmt-{epoch:02d}-{val_loss:.3f}',                                             
-        save_top_k=3,
+        filename='nmt-{epoch:02d}-{val_loss:.3f}-{test_quad_bleu:.3f}',                                             
+        save_top_k=2,
         mode='min',
         save_weights_only=True
     )
@@ -220,21 +258,23 @@ def main(args):
         'precision': args.precision,                                    # Precision to use for training
         'check_val_every_n_epoch': 1,                                   # No. of epochs to run validation
         'gradient_clip_val': args.grad_clip,                            # Gradient norm clipping value
-        'accumulate_grad_batches': args.accumulate_grad,                # No. of batches to accumulate gradients over
         'callbacks': [LearningRateMonitor(logging_interval='epoch'),    # Callbacks to use for training
-                      EarlyStopping(monitor="val_loss", patience=5),
+                      EarlyStopping(monitor="val_loss", patience=4),
                       checkpoint_callback],
         'logger': comet_logger                                        # Logger to use for training
     }
 
     if args.gpus > 1:
         trainer_args['strategy'] = args.dist_backend
+        
+    if args.acc_grad > 1:
+        trainer_args['accumulate_grad_batches'] = args.acc_grad
 
     trainer = pl.Trainer(**trainer_args)
 
     trainer.fit(nmt_trainer, data_module, ckpt_path=args.checkpoint_path)
     trainer.validate(nmt_trainer, data_module)
-
+    trainer.test(nmt_trainer, data_module)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -248,25 +288,32 @@ if __name__ == '__main__':
     # Dataset Configuration
     parser.add_argument('--file_path', default=None, required=True, type=str, help='csv file to load training data')
     parser.add_argument('--input_lang', default='en', type=str, help='source language')
-    parser.add_argument('--output_lang', default='nep', type=str, help='target language')
-    parser.add_argument('--reverse', default=False, action='store_true', help='whether to reverse source and target languages')
+    parser.add_argument('--output_lang', default='np', type=str, help='target language')
+    parser.add_argument('--reverse', action='store_true', help='Whether to reverse source and target languages')
     parser.add_argument('--max_len', default=12, type=int, help='maximum sequence length')
+    parser.add_argument('--min_len', default=2, type=int, help='minimum sequence length')
     parser.add_argument('--seed', default=42, type=int, help='seed for reproducibility')
+
+
+    # Model HyperParameters
+    parser.add_argument('-hs','--hidden_size', default=128, type=int, help='model hidden size')
+    parser.add_argument('-nl', '--num_layers', default=2, type=int, help='number of layers')
+    parser.add_argument('-bd', '--bidirection', action='store_true', help='whether to use bidirectional model')
 
     # General Train Hyperparameters
     parser.add_argument('--epochs', default=20, type=int, help='number of total epochs to run')
     parser.add_argument('--batch_size', default=32, type=int, help='size of batch')
     
     parser.add_argument('-lr','--learning_rate', default=2e-3, type=float, help='learning rate')
-    parser.add_argument('-lrf', '--lr_factor', default=0.5, type=float, help='learning rate factor for decay')
+    parser.add_argument('-lrf', '--lr_factor', default=0.6, type=float, help='learning rate factor for decay')
     parser.add_argument('-lrp', '--lr_patience', default=1, type=int, help='learning rate patience for decay')
-    parser.add_argument('-mlt', '--min_lr_threshold', default=5e-3, type=float, help='minimum learning rate threshold')
+    parser.add_argument('-mlt', '--min_lr_threshold', default=1e-2, type=float, help='minimum learning rate threshold')
     parser.add_argument('-mlr', '--min_lr', default=5e-6, type=float, help='minimum learning rate')
 
     parser.add_argument('--precision', default='32-true', type=str, help='precision')
     parser.add_argument('--checkpoint_path', default=None, type=str, help='path of checkpoint file to resume training')
     parser.add_argument('-gc', '--grad_clip', default=1.0, type=float, help='gradient norm clipping value')
-    parser.add_argument('-ag', '--accumulate_grad', default=2, type=int, help='number of batches to accumulate gradients over')
+    parser.add_argument('-ag', '--acc_grad', default=2, type=int, help='number of batches to accumulate gradients over')
 
     args = parser.parse_args()
     main(args)

@@ -35,6 +35,7 @@ class PrepData(Dataset):
         # Normalize and optionally reverse pairs
         self.pairs = [[utils.normalize_String(s) for s in line] for line in lines]
         if reverse:
+            logger.info("Reversing targets")
             self.pairs = [list(reversed(p)) for p in self.pairs]
 
         # Initialize language vocabularies
@@ -56,7 +57,7 @@ class PrepData(Dataset):
 
 
 class NMTDataModule(pl.LightningDataModule):
-    def __init__(self, file_path, lang1, lang2, split_ratio=0.8, batch_size=32, num_workers=2, max_len=12, seed=42, reverse=False):
+    def __init__(self, file_path, lang1, lang2, split_ratio=0.8, batch_size=32, num_workers=2, max_len=12, min_len=2,seed=42, reverse=False):
         """
         Data module for NMT training and validation.
 
@@ -68,6 +69,7 @@ class NMTDataModule(pl.LightningDataModule):
             batch_size (int): Batch size for DataLoader.
             num_workers (int): Number of DataLoader workers.
             max_len (int): Maximum sentence length.
+            min_len (int): Minimum sentence length.
             reverse (bool): Whether to reverse source and target languages.
         """
         super().__init__()
@@ -77,7 +79,7 @@ class NMTDataModule(pl.LightningDataModule):
         self.split_ratio = split_ratio
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.max_len = max_len
+        self.max_len, self.min_len = max_len, min_len
         self.seed = seed
         self.reverse = reverse
         self.input_lang = None
@@ -88,10 +90,10 @@ class NMTDataModule(pl.LightningDataModule):
         """Load, filter, and prepare dataset for NMT."""
         prep_data = PrepData(self.file_path, self.lang1, self.lang2, self.reverse)
         self.input_lang, self.output_lang = prep_data.get_languages()
-        pairs = utils.filterPairs(prep_data.pairs, self.max_len)
-
+        pairs = utils.filterPairs(prep_data.pairs, self.max_len, self.min_len)
+        
         logger.info(f"Read {len(prep_data)} sentence pairs")
-        logger.info(f"Trimmed to {len(pairs)} sentence pairs")
+        logger.info(f"Trimmed to {len(pairs)} sentence pairs | Max_len: {self.max_len}, Min_len: {self.min_len}")
 
         for pair in pairs:
             self.input_lang.addSentence(pair[0])
@@ -126,13 +128,10 @@ class NMTDataModule(pl.LightningDataModule):
         test_size = len(dataset) - train_size
         self.train_dataset, self.test_dataset = random_split(dataset, [train_size, test_size])
 
-        self.train_sampler = RandomSampler(self.train_dataset)
-        self.test_sampler = SequentialSampler(self.test_dataset)
-
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
-            sampler=self.train_sampler,
+            shuffle=True,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True
@@ -141,7 +140,17 @@ class NMTDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.test_dataset,
-            sampler=self.test_sampler,
+            shuffle=False,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True
+        )
+    
+    def test_dataloader(self):
+        # NOTE: Used same val_dataloader for final_test without teacher forcing
+        return DataLoader(
+            self.test_dataset,
+            shuffle=False,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True

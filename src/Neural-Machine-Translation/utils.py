@@ -71,17 +71,26 @@ class WordVocabulary:
 # NOTE: Might need change in the pre processing of strings as per language used
 def normalize_String(s):
     s = s.lower().strip()
-    # Add spaces behind punctuation
-    s = re.sub(r"([.!?।])", r" \1", s)
-    # Retain Devanagari, English & Latin characters and punctuation
-    s = re.sub(r"[^\u0900-\u097Fa-zA-Z0-9.!?']+", r" ", s)
+    # Replace multiple punctuation marks (e.g., "..", "...") with a single punctuation mark
+    s = re.sub(r"([.!?।])\1+", r"", s)
+    
+    # Add a space before single punctuation marks (if not already present) and ensure they are spaced correctly
+    s = re.sub(r"(?<! )([.!?।])", r" \1", s)
+    
+    # Retain Devanagari, English & Latin characters and punctuation, replace others with a space
+    s = re.sub(r"[^\u0900-\u097Fa-zA-Z0-9.!?]+", r" ", s)
+    
     return s
 
 
-def filterPairs(pairs, max_len):
-    """ Filter pairs of sentences with length greater than max_len """
-    MAX_LENGTH = max_len
-    return [pair for pair in pairs if (len(pair[0].split(' ')) < MAX_LENGTH and len(pair[1].split(' ')) < MAX_LENGTH)]
+def filterPairs(pairs, max_len, min_len):
+    """ Filter pairs of sentences with length greater than max_len and less than min_len """
+    MAX_LENGTH, MIN_LENGTH = max_len, min_len
+    return [
+        pair for pair in pairs
+        if (len(pair[0].split(' ')) >= MIN_LENGTH and len(pair[1].split(' ')) >= MIN_LENGTH) and
+        (len(pair[0].split(' ')) < MAX_LENGTH and len(pair[1].split(' ')) < MAX_LENGTH)
+    ]
 
 
 def indexesFromSentence(lang, sentence):
@@ -115,7 +124,9 @@ def set_seed(seed):
     """Set seed for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True  # Make the results deterministic
-    torch.backends.cudnn.benchmark = False     # Disable auto-tuner to ensure deterministic behavior
+
+    # NOTE: Commented reproducibility seeding due to teacher forcing probablity in the model
+    # torch.manual_seed(seed)
+    # torch.cuda.manual_seed(seed)
+    # torch.backends.cudnn.deterministic = True  # Make the results deterministic
+    # torch.backends.cudnn.benchmark = False     # Disable auto-tuner to ensure deterministic behavior
