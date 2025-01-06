@@ -73,7 +73,7 @@ class NMTTrainer(pl.LightningModule):
 
     def _common_step(self, batch, batch_idx):
         input_tensor, target_tensor = batch
-        decoder_out, _ = self.forward(input_tensor, target_tensor)
+        decoder_out, _, attn_weights = self.forward(input_tensor, target_tensor)
 
         loss = self.loss_fn(decoder_out.view(-1, decoder_out.size(-1)), target_tensor.view(-1))
 
@@ -225,6 +225,7 @@ def main(args):
         "max_len": args.max_len,
         "bidirection": True,
         "dropout_rate": 0.3,
+        "attention": args.attention,
         "device": args.device
     }
 
@@ -299,6 +300,7 @@ if __name__ == '__main__':
     parser.add_argument('-hs','--hidden_size', default=128, type=int, help='model hidden size')
     parser.add_argument('-nl', '--num_layers', default=2, type=int, help='number of layers')
     parser.add_argument('-bd', '--bidirection', action='store_true', help='whether to use bidirectional model')
+    parser.add_argument('-at', '--attention', action='store_true', help='whether to use attention mechanism')
 
     # General Train Hyperparameters
     parser.add_argument('--epochs', default=20, type=int, help='number of total epochs to run')
