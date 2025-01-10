@@ -4,9 +4,9 @@ import torch
 import torch.nn as nn
 
 
-class Encoder(nn.Module):
+class GRUEncoder(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, bidirection=True, dropout_rate=0.1):
-        super(Encoder, self).__init__()
+        super(GRUEncoder, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.bidirectional = bidirection

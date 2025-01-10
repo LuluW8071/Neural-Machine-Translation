@@ -1,23 +1,25 @@
-""" GRU Decoder """
+""" GRU Decoder with Attention """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
+from .attention import BahdanauAttention
 
-class Decoder(nn.Module):
-    def __init__(self, hidden_size, output_size, num_layers, device):
-        super(Decoder, self).__init__()
+class AttnGRUDecoder(nn.Module):
+    def __init__(self, hidden_size, output_size, num_layers, bidirection, device):
+        super(AttnGRUDecoder, self).__init__()
         self.embedding = nn.Embedding(output_size, hidden_size)
 
         # NOTE: In NMT Bidirectional RNN Decoder doesn't make sense
         # as decoding is autoregressive process; each token is generated step-by-step, conidtioned on prev. tokens and encoder outputs.
-        self.gru = nn.GRU(hidden_size, 
+        # 2x due to concat of embedding and context vector
+        self.gru = nn.GRU(3 * hidden_size if bidirection else 2 * hidden_size,  
                           hidden_size,
                           num_layers, 
                           bidirectional=False, 
                           batch_first=True)
-        
+
+        self.attention = BahdanauAttention(hidden_size, bidirection)
         self.out = nn.Linear(hidden_size, output_size)
         self.device = device
 
@@ -31,14 +33,17 @@ class Decoder(nn.Module):
         # Match decoder hidden state to encoder hidden state
         decoder_hidden = encoder_hidden
 
-        # List to hold decoder outputs
+        # List to hold decoder outputs and attn scores
         decoder_outputs = []
-        for i in range(max_len):
-            decoder_output, decoder_hidden = self.forward_step(decoder_input, decoder_hidden)
-            decoder_outputs.append(decoder_output)
+        attentions = []
 
-            if target_tensor is not None and torch.rand(1) > 0.3: 
-                # Teacher forcing: Feed the target as the next input(70% chance)
+        for i in range(max_len):
+            decoder_output, decoder_hidden, attn_weights = self.forward_step(decoder_input, decoder_hidden, encoder_out)
+            decoder_outputs.append(decoder_output)
+            attentions.append(attn_weights)
+
+            if target_tensor is not None and torch.rand(1) > 0.2: 
+                # Teacher forcing: Feed the target as the next input(80% chance)
                 decoder_input = target_tensor[:, i].unsqueeze(1)
             else:
                 # Without teacher forcing: use its own predictions as the next input
@@ -46,11 +51,18 @@ class Decoder(nn.Module):
                 decoder_input = topi.squeeze(-1).detach()
 
         decoder_outputs = torch.cat(decoder_outputs, dim=1)
-        return decoder_outputs, decoder_hidden, None
+        attentions = torch.cat(attentions, dim=1)
+        return decoder_outputs, decoder_hidden, attentions
 
-    def forward_step(self, decoder_input, decoder_hidden):
-        output = self.embedding(decoder_input)
-        output = F.relu(output)
-        output, hidden = self.gru(output, decoder_hidden)
+    def forward_step(self, decoder_input, decoder_hidden, encoder_out):
+        input_embed = self.embedding(decoder_input)
+
+        query = decoder_hidden.permute(1, 0, 2)
+        
+        context, attn_weights = self.attention(query, encoder_out)
+        input_gru = torch.cat((input_embed, context), dim=2)
+
+        output, hidden = self.gru(input_gru, decoder_hidden)
         output = self.out(output)
-        return output, hidden
+
+        return output, hidden, attn_weights
