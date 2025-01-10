@@ -1,14 +1,19 @@
 import comet_ml
 import os
+import io
 import argparse
 import pytorch_lightning as pl
 import torch
 
 import torch.optim as optim
 import torch.nn as nn
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+from matplotlib.font_manager import FontProperties
 
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
+from PIL import Image
 from torchmetrics.text import  SacreBLEUScore
 
 # Load API
@@ -20,15 +25,24 @@ import utils
 from dataset import NMTDataModule
 from model import NMTModel
 
+import warnings
+
+# Suppress all UserWarnings (including missing glyphs warnings)
+warnings.filterwarnings("ignore", category=UserWarning)
+
 
 class NMTTrainer(pl.LightningModule):
-    def __init__(self, model, data_module, args):
+    def __init__(self, model, data_module, mangal_font, args):
         super(NMTTrainer, self).__init__()
         self.model = model
         self.args = args
 
         self.input_lang = data_module.input_lang
         self.output_lang = data_module.output_lang
+
+        # For Attention Mapping Plots
+        self.mangal_font = FontProperties(fname=args.font_path, size=10)
+        self.english_font = FontProperties(size=10) 
 
         # Loss fn and Metrics
         self.val_losses = []
@@ -77,10 +91,10 @@ class NMTTrainer(pl.LightningModule):
 
         loss = self.loss_fn(decoder_out.view(-1, decoder_out.size(-1)), target_tensor.view(-1))
 
-        return loss, decoder_out, input_tensor, target_tensor
+        return loss, decoder_out, input_tensor, target_tensor, attn_weights
 
     def training_step(self, batch, batch_idx):
-        loss, _, _, _ = self._common_step(batch, batch_idx)
+        loss, _, _, _, _ = self._common_step(batch, batch_idx)
 
         # Log train_loss in the logger
         self.log('train_loss', loss, on_step=True, on_epoch=False, prog_bar=True, logger=True, sync_dist=self.sync_dist)
@@ -91,15 +105,16 @@ class NMTTrainer(pl.LightningModule):
         # NOTE: Adopting teacher forcing to account for variable length to prevent overfitting
         # In validation, teacher forcing should not be done as it should simulate real-world examples
         # Constructed a test_step to simulate without teacher forcing using the same dataloader as in validation_step 
-        loss, decoder_out, input_tensor, target_tensor = self._common_step(batch, batch_idx)
+        loss, decoder_out, input_tensor, target_tensor, attn_weights = self._common_step(batch, batch_idx)
         self.val_losses.append(loss)
 
         # Decode the outputs and targets for metric calculations
         decoded_sentences = self._decode(decoder_out)
         targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensor]
         
-        if batch_idx % 256 == 0:
-            self._text_logger(batch_idx, input_tensor, targets, decoded_sentences, phase="Validation")
+        if batch_idx % 128 == 0:
+            # print("Batch:", attn_weights, attn_weights.shape)
+            self._logger(batch_idx, input_tensor, targets, decoded_sentences, attn_weights, phase="Validation")
 
         # Calculate metrics
         bigram_bleu_batch = self.bigram_sacbleu(decoded_sentences, [targets])
@@ -131,16 +146,16 @@ class NMTTrainer(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         input_tensor, target_tensor = batch
-        # Validation step without teacher forcing
-        decoder_out, _ = self.forward(input_tensor, None)
+        # Test step without teacher forcing
+        decoder_out, _, attn_weights = self.forward(input_tensor, None)
 
         # Decode outputs and targets
         decoded_sentences = self._decode(decoder_out)
         targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensor]
 
         # Log a few examples for analysis
-        if batch_idx % 128 == 0:
-            self._text_logger(batch_idx, input_tensor, targets, decoded_sentences, phase="Test")
+        if batch_idx % 32 == 0:
+            self._logger(batch_idx, input_tensor, targets, decoded_sentences, attn_weights, phase="Test")
 
         # Calculate BLEU and other metrics
         bigram_bleu_score = self.bigram_sacbleu(decoded_sentences, [targets])
@@ -174,16 +189,31 @@ class NMTTrainer(pl.LightningModule):
 
         return batch_sentences
     
-    def _text_logger(self, batch_idx, input_tensors, target_tensors, decoded_sentences, phase):
+    def _logger(self, batch_idx, input_tensors, target_tensors, decoded_sentences, attn_weights, phase):
         # Log source, target, and translations
         log_texts = []
-
-        for i in range(16):
+        for i in range(32):
             log_source = utils.sentenceFromIndexes(self.input_lang, input_tensors[i].tolist())
             log_target, log_translated = target_tensors[i], decoded_sentences[i]
-
             log_text = f"{log_source}\n> {log_target}\n= {log_translated}"
             log_texts.append(log_text)
+
+            if self.args.attention and torch.rand(1)>0.8:   # 20% chances of log images (control excessive log of images)
+                translated_words = log_translated.split(' ')
+                # print(log_translated, translated_words, sep="\n")
+                buf = self._showAttention(log_source, translated_words, attn_weights[i][:len(translated_words)])
+                
+                # Convert the buffer to a PIL image
+                img = Image.open(buf)
+
+                # Log the image to the logger
+                self.logger.experiment.log_image(
+                    img,
+                    metadata={"input_sentence": log_source, "translated": log_translated}
+                )
+
+                # Close the buffer
+                buf.close()
 
         combined_logs = "\n\n".join(log_texts)
         self.logger.experiment.log_text(
@@ -192,22 +222,52 @@ class NMTTrainer(pl.LightningModule):
         )
 
 
+    def _showAttention(self, input_sentence, output_words, attentions):
+        # Create the attention plot
+        fig = plt.figure(figsize=(10, 10))
+        ax = fig.add_subplot(111)
+
+        input_words = input_sentence.split(' ')
+        attentions = attentions[:len(output_words), :len(input_words)]
+        cax = ax.matshow(attentions.cpu().numpy(), cmap='bone')
+
+        fig.colorbar(cax)
+
+        ax.set_xticklabels([''] + input_words, 
+                           rotation=90, 
+                           fontproperties=self.english_font if self.args.reverse else self.mangal_font)
+        ax.set_yticklabels([''] + output_words, 
+                           fontproperties=self.mangal_font if self.args.reverse else self.english_font)
+
+        # Set the tick positions and show labels at every tick
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
+        ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
+
+        # Save the plot to a BytesIO buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight')
+        buf.seek(0)
+        plt.close(fig)
+
+        return buf
+
+
+
 def main(args):
     # Set seed for reproducibility
-    utils.set_seed(args.seed)
+    # utils.set_seed(args.seed)
 
     # Data Module
     data_module = NMTDataModule(
-        file_path=args.file_path,       # Path to your dataset file
+        train_path=args.train_path,
+        valid_path=args.valid_path,
         lang1=args.input_lang,          # Source language
         lang2=args.output_lang,         # Target language
-        split_ratio=0.8,                # Train-test split
         batch_size=args.batch_size,     # Batch size
         max_len=args.max_len,           # Maximum sequence length
         min_len=args.min_len,           # Minimum sequence length
         num_workers=args.num_workers,   # DataLoader workers
-        seed=args.seed,                 # Random seed
-        reverse=args.reverse            # Whether to reverse the language pairs
+        reverse=args.reverse           # Whether to reverse the language pairs
     )
 
     data_module.setup()
@@ -223,21 +283,20 @@ def main(args):
         "hidden_size": args.hidden_size,
         "num_layers": args.num_layers,
         "max_len": args.max_len,
-        "bidirection": True,
-        "dropout_rate": 0.3,
+        "bidirection": args.bidirection,
+        "dropout_rate": 0.2,
         "attention": args.attention,
+        "model_type": args.model_type,
         "device": args.device
     }
 
     model = NMTModel(**h_params)
-    model = torch.compile(model)
-
-    nmt_trainer = NMTTrainer(model, data_module, args)
+    nmt_trainer = NMTTrainer(model, data_module, args.font_path, args)
 
     # Initialize the trainer
     comet_logger = CometLogger(
         api_key=os.getenv('API_KEY'), 
-        project_name=os.getenv('PROJECT_NAME'),
+        project_name=os.getenv('PROJECT_NAME')
     )
 
     # Checkpoint Callbacks
@@ -287,24 +346,26 @@ if __name__ == '__main__':
     parser.add_argument('-db', '--dist_backend', default='ddp', type=str, help='which distributed backend to use for aggregating multi-gpu train')
 
     # Dataset Configuration
-    parser.add_argument('--file_path', default=None, required=True, type=str, help='csv file to load training data')
+    parser.add_argument('--train_path', default=None, required=True, type=str, help='tsv file to load training data')
+    parser.add_argument('--valid_path', default=None, required=True, type=str, help='csv file to load valid data')
+    parser.add_argument('--font_path', default=None, required=True, type=str, help='Font_file: .ttf may require if data contains devangari like fonts')
     parser.add_argument('--input_lang', default='en', type=str, help='source language')
     parser.add_argument('--output_lang', default='np', type=str, help='target language')
     parser.add_argument('--reverse', action='store_true', help='Whether to reverse source and target languages')
     parser.add_argument('--max_len', default=12, type=int, help='maximum sequence length')
     parser.add_argument('--min_len', default=2, type=int, help='minimum sequence length')
-    parser.add_argument('--seed', default=42, type=int, help='seed for reproducibility')
 
 
     # Model HyperParameters
+    parser.add_argument('-mt', '--model_type', default='lstm', type=str, help='model type to choose between lstm and gru')
     parser.add_argument('-hs','--hidden_size', default=128, type=int, help='model hidden size')
     parser.add_argument('-nl', '--num_layers', default=2, type=int, help='number of layers')
     parser.add_argument('-bd', '--bidirection', action='store_true', help='whether to use bidirectional model')
     parser.add_argument('-at', '--attention', action='store_true', help='whether to use attention mechanism')
 
     # General Train Hyperparameters
-    parser.add_argument('--epochs', default=20, type=int, help='number of total epochs to run')
-    parser.add_argument('--batch_size', default=32, type=int, help='size of batch')
+    parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
+    parser.add_argument('--batch_size', default=64, type=int, help='size of batch')
     
     parser.add_argument('-lr','--learning_rate', default=2e-3, type=float, help='learning rate')
     parser.add_argument('-lrf', '--lr_factor', default=0.6, type=float, help='learning rate factor for decay')
