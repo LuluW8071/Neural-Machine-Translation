@@ -20,7 +20,9 @@ class GRUEncoder(nn.Module):
                           dropout=dropout_rate)
         
         self.dropout = nn.Dropout(dropout_rate)
-        self.fc = nn.Linear(self.hidden_size*2, self.hidden_size)   # For Bidirectional
+
+        # For Bidirectional
+        self.fc = nn.Linear(self.hidden_size*2, self.hidden_size) if self.bidirectional else None
 
     def forward(self, input):
         embedded = self.dropout(self.embedding(input))
