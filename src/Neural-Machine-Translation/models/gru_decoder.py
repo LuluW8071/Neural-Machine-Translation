@@ -1,43 +1,13 @@
-""" GRU Model (Supports BiDirectional Encoder) """
+""" GRU Decoder """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class Encoder(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, bidirection=True, dropout_rate=0.1):
-        super(Encoder, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.bidirectional = bidirection
-        self.embedding = nn.Embedding(input_size, hidden_size)
-        
-        self.gru = nn.GRU(hidden_size, 
-                          hidden_size, 
-                          num_layers,
-                          bidirectional=bidirection,
-                          batch_first=True,
-                          dropout=dropout_rate)
-        
-        self.dropout = nn.Dropout(dropout_rate)
-        self.fc = nn.Linear(self.hidden_size*2, self.hidden_size)   # For Bidirectional
-
-    def forward(self, input):
-        embedded = self.dropout(self.embedding(input))
-        out, hidden = self.gru(embedded)
-        
-        if self.bidirectional:
-            # Combine forward and backward hidden states across all layers
-            hidden = torch.cat((hidden[0:self.num_layers], hidden[self.num_layers:]), dim=2)
-            hidden = self.fc(hidden)
-
-        return out, hidden
-
-
-class Decoder(nn.Module):
+class GRUDecoder(nn.Module):
     def __init__(self, hidden_size, output_size, num_layers, device):
-        super(Decoder, self).__init__()
+        super(GRUDecoder, self).__init__()
         self.embedding = nn.Embedding(output_size, hidden_size)
 
         # NOTE: In NMT Bidirectional RNN Decoder doesn't make sense
@@ -67,8 +37,8 @@ class Decoder(nn.Module):
             decoder_output, decoder_hidden = self.forward_step(decoder_input, decoder_hidden)
             decoder_outputs.append(decoder_output)
 
-            if target_tensor is not None and torch.rand(1) > 0.3: 
-                # Teacher forcing: Feed the target as the next input(70% chance)
+            if target_tensor is not None and torch.rand(1) > 0.2: 
+                # Teacher forcing: Feed the target as the next input(80% chance)
                 decoder_input = target_tensor[:, i].unsqueeze(1)
             else:
                 # Without teacher forcing: use its own predictions as the next input
