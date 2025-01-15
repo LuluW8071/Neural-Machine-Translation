@@ -14,7 +14,7 @@ from matplotlib.font_manager import FontProperties
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
 from PIL import Image
-from torchmetrics.text import  SacreBLEUScore
+from torchmetrics.text import SacreBLEUScore
 
 # Load API
 from dotenv import load_dotenv
@@ -32,7 +32,8 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 class NMTTrainer(pl.LightningModule):
-    def __init__(self, model, data_module, mangal_font, args):
+    """ Neural Machine Translation Trainer """
+    def __init__(self, model, data_module, custom_font, args):
         super(NMTTrainer, self).__init__()
         self.model = model
         self.args = args
@@ -41,25 +42,26 @@ class NMTTrainer(pl.LightningModule):
         self.output_lang = data_module.output_lang
 
         # For Attention Mapping Plots
-        self.mangal_font = FontProperties(fname=args.font_path, size=10)
+        self.custom_font = FontProperties(fname=args.font_path, size=10)
         self.english_font = FontProperties(size=10) 
 
         # Loss fn and Metrics
         self.val_losses = []
-        self.bigram_bleu_scores = []
         self.quadgram_bleu_scores = []
 
         self.loss_fn = nn.CrossEntropyLoss()
-        self.bigram_sacbleu = SacreBLEUScore(n_gram=2, smooth=True, tokenize='13a')
         self.quadgram_sacbleu = SacreBLEUScore(n_gram=4, smooth=True, tokenize='13a')
 
         # Precompute sync_dist for distributed GPUs train
         self.sync_dist = True if args.gpus > 1 else False
 
     def forward(self, input_tensor, target_tensor):
+        """ Forward pass of the model """
         return self.model(input_tensor, target_tensor)
 
+
     def configure_optimizers(self):
+        """ Configure optimizer and scheduler """
         optimizer = optim.AdamW(
             self.model.parameters(),
             lr=self.args.learning_rate,
@@ -86,6 +88,7 @@ class NMTTrainer(pl.LightningModule):
 
 
     def _common_step(self, batch, batch_idx):
+        """ Common step for training and validation """
         input_tensor, target_tensor = batch
         decoder_out, _, attn_weights = self.forward(input_tensor, target_tensor)
 
@@ -112,75 +115,63 @@ class NMTTrainer(pl.LightningModule):
         decoded_sentences = self._decode(decoder_out)
         targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensor]
         
-        if batch_idx % 128 == 0:
-            # print("Batch:", attn_weights, attn_weights.shape)
+        # Log some examples
+        if batch_idx % 256 == 0:
             self._logger(batch_idx, input_tensor, targets, decoded_sentences, attn_weights, phase="Validation")
 
         # Calculate metrics
-        bigram_bleu_batch = self.bigram_sacbleu(decoded_sentences, [targets])
         quadgram_bleu_batch = self.quadgram_sacbleu(decoded_sentences, [targets])
-
-        self.bigram_bleu_scores.append(bigram_bleu_batch)
         self.quadgram_bleu_scores.append(quadgram_bleu_batch)
 
         return {'val_loss': loss}
     
     def on_validation_epoch_end(self):
-        # Avg. loss and metrics
+        """ Log validation metrics after validation epoch end """
+        # Avg. loss and metrics for validation
         avg_val_loss = torch.stack(self.val_losses).mean()
-        avg_bi_bleu = torch.stack(self.bigram_bleu_scores).mean()
         avg_quad_bleu = torch.stack(self.quadgram_bleu_scores).mean()
 
         # Log avg. loss and metrics
         metrics = {
-            "val_loss": avg_val_loss,
-            "bi_bleu": avg_bi_bleu,
+            "val_loss": avg_val_loss, 
             "quad_bleu": avg_quad_bleu
         }
 
         self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
 
         self.val_losses.clear()
-        self.bigram_bleu_scores.clear()
         self.quadgram_bleu_scores.clear()
 
     def test_step(self, batch, batch_idx):
+        """ Perform Validation on same validation set without teacher forcing """
         input_tensor, target_tensor = batch
-        # Test step without teacher forcing
         decoder_out, _, attn_weights = self.forward(input_tensor, None)
 
         # Decode outputs and targets
         decoded_sentences = self._decode(decoder_out)
         targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensor]
 
-        # Log a few examples for analysis
         if batch_idx % 32 == 0:
             self._logger(batch_idx, input_tensor, targets, decoded_sentences, attn_weights, phase="Test")
 
-        # Calculate BLEU and other metrics
-        bigram_bleu_score = self.bigram_sacbleu(decoded_sentences, [targets])
+        # Calculate BLEU
         quadgram_bleu_score = self.quadgram_sacbleu(decoded_sentences, [targets])
-
-        metrics = {
-                    "test_bigram_bleu": bigram_bleu_score,
-                    "test_quad_bleu": quadgram_bleu_score
-                }
+        metrics = {"test_quad_bleu": quadgram_bleu_score}
         
         self.log_dict(metrics, on_epoch=True, prog_bar=True, logger=True, batch_size=self.args.batch_size, sync_dist=self.sync_dist)
-
         return metrics
 
 
     def _decode(self, decoded_output):
-        # Turn outputs back to sentence
+        """ Turn raw outputs back to sentence """
         _, topi = decoded_output.topk(1)
         decoded_ids = topi.squeeze().tolist()
 
-        batch_sentences = []  # List to hold sentences for the entire batch
+        batch_sentences = []    # List to hold sentences for the entire batch
         for ids in decoded_ids:
             decoded_words = []
             for idx in ids:
-                if idx == 1:  # EOS token: 1
+                if idx == 1:    # EOS token: 1
                     # decoded_words.append('<EOS>')
                     break
                 decoded_words.append(self.output_lang.index2word[idx])
@@ -190,40 +181,38 @@ class NMTTrainer(pl.LightningModule):
         return batch_sentences
     
     def _logger(self, batch_idx, input_tensors, target_tensors, decoded_sentences, attn_weights, phase):
-        # Log source, target, and translations
+        """ Log source, target, and translations """
         log_texts = []
         for i in range(32):
             log_source = utils.sentenceFromIndexes(self.input_lang, input_tensors[i].tolist())
             log_target, log_translated = target_tensors[i], decoded_sentences[i]
             log_text = f"{log_source}\n> {log_target}\n= {log_translated}"
             log_texts.append(log_text)
+            combined_logs = "\n\n".join(log_texts)
 
-            if self.args.attention and torch.rand(1)>0.8:   # 20% chances of log images (control excessive log of images)
+            # 20% chances of log images (to control excessive log of images)
+            if self.args.attention and torch.rand(1)>0.8:   
                 translated_words = log_translated.split(' ')
-                # print(log_translated, translated_words, sep="\n")
                 buf = self._showAttention(log_source, translated_words, attn_weights[i][:len(translated_words)])
                 
                 # Convert the buffer to a PIL image
                 img = Image.open(buf)
-
-                # Log the image to the logger
-                self.logger.experiment.log_image(
-                    img,
-                    metadata={"input_sentence": log_source, "translated": log_translated}
-                )
+                metadata = {
+                    "input_sentence": log_source,
+                    "target": log_target,
+                    "translated": log_translated
+                }
+                self.logger.experiment.log_image(img, metadata=metadata)
 
                 # Close the buffer
                 buf.close()
 
-        combined_logs = "\n\n".join(log_texts)
-        self.logger.experiment.log_text(
-            text=combined_logs, 
-            metadata={"Phase": phase}
-        )
+        # Log source, target and translated texts
+        self.logger.experiment.log_text(text=combined_logs, metadata={"Phase": phase})
 
 
     def _showAttention(self, input_sentence, output_words, attentions):
-        # Create the attention plot
+        """ Attention plot """
         fig = plt.figure(figsize=(10, 10))
         ax = fig.add_subplot(111)
 
@@ -235,9 +224,9 @@ class NMTTrainer(pl.LightningModule):
 
         ax.set_xticklabels([''] + input_words, 
                            rotation=90, 
-                           fontproperties=self.english_font if self.args.reverse else self.mangal_font)
+                           fontproperties=self.english_font if self.args.reverse else self.custom_font)
         ax.set_yticklabels([''] + output_words, 
-                           fontproperties=self.mangal_font if self.args.reverse else self.english_font)
+                           fontproperties=self.custom_font if self.args.reverse else self.english_font)
 
         # Set the tick positions and show labels at every tick
         ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
@@ -267,7 +256,7 @@ def main(args):
         max_len=args.max_len,           # Maximum sequence length
         min_len=args.min_len,           # Minimum sequence length
         num_workers=args.num_workers,   # DataLoader workers
-        reverse=args.reverse           # Whether to reverse the language pairs
+        reverse=args.reverse            # Whether to reverse the language pairs
     )
 
     data_module.setup()
@@ -321,7 +310,7 @@ def main(args):
         'callbacks': [LearningRateMonitor(logging_interval='epoch'),    # Callbacks to use for training
                       EarlyStopping(monitor="val_loss", patience=4),
                       checkpoint_callback],
-        'logger': comet_logger                                        # Logger to use for training
+        'logger': comet_logger                                          # Logger to use for training
     }
 
     if args.gpus > 1:
@@ -367,11 +356,11 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
     parser.add_argument('--batch_size', default=64, type=int, help='size of batch')
     
-    parser.add_argument('-lr','--learning_rate', default=2e-3, type=float, help='learning rate')
-    parser.add_argument('-lrf', '--lr_factor', default=0.6, type=float, help='learning rate factor for decay')
+    parser.add_argument('-lr','--learning_rate', default=4e-4, type=float, help='learning rate')
+    parser.add_argument('-lrf', '--lr_factor', default=0.5, type=float, help='learning rate factor for decay')
     parser.add_argument('-lrp', '--lr_patience', default=1, type=int, help='learning rate patience for decay')
     parser.add_argument('-mlt', '--min_lr_threshold', default=1e-2, type=float, help='minimum learning rate threshold')
-    parser.add_argument('-mlr', '--min_lr', default=5e-6, type=float, help='minimum learning rate')
+    parser.add_argument('-mlr', '--min_lr', default=1e-4, type=float, help='minimum learning rate')
 
     parser.add_argument('--precision', default='32-true', type=str, help='precision')
     parser.add_argument('--checkpoint_path', default=None, type=str, help='path of checkpoint file to resume training')
