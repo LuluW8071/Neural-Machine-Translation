@@ -33,7 +33,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 class NMTTrainer(pl.LightningModule):
     """ Neural Machine Translation Trainer """
-    def __init__(self, model, data_module, custom_font, args):
+    def __init__(self, model, data_module, args):
         super(NMTTrainer, self).__init__()
         self.model = model
         self.args = args
@@ -280,7 +280,7 @@ def main(args):
     }
 
     model = NMTModel(**h_params)
-    nmt_trainer = NMTTrainer(model, data_module, args.font_path, args)
+    nmt_trainer = NMTTrainer(model, data_module, args)
 
     # Initialize the trainer
     comet_logger = CometLogger(
