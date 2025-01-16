@@ -1,0 +1,11 @@
+lightning
+torch
+torchmetrics
+comet_ml
+numpy
+matplotlib
+pillow
+python-dotenv
+mplcairo 
+PyQt5 
+PySide

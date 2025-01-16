@@ -66,37 +66,31 @@ class WordVocabulary:
         print(f"Vocabulary loaded from {file_path}")
         return vocab
 
-
-# Lowercase, trim and remove non-letter characters
 # NOTE: Might need change in the pre processing of strings as per language used
 def normalize_String(s):
+    """ Lowercase, trim and remove non-letter characters """
     s = s.lower().strip()
 
     # Replace multiple punctuation marks (e.g., "..", "...") with a single punctuation mark
     s = re.sub(r"([.!?।])\1+", r"\1", s)
 
-    # Ensure a space before commas if not already present, but exclude commas within numbers
-    s = re.sub(r"(?<!\d)(?<!\s),", r" ,", s)  # Matches commas that are not part of a number
-
-    # Leave numbers like 2,45,000 as they are
-    s = re.sub(r"(?<=\d),(?=\d)", r"", s)  # Remove commas between digits in numbers
+    # Remove all commas
+    s = s.replace(",", "")
 
     # Add a space before punctuation marks if not already present (except for apostrophes)
-    s = re.sub(r"(?<!\s)([.!?¿¡।])", r" \1", s)  # Matches punctuation that is not preceded by a space
+    s = re.sub(r"(?<!\s)([.!?¿¡।])", r" \1", s)
 
     # Remove patterns like (1), (२), or (ग)
     s = re.sub(r"\(\d+\)|\([\u0966-\u096F]+\)|\([a-z\u0900-\u097F]\)", r"", s)
 
-    # Restore protected numbers with commas
-    s = re.sub(r"<NUM>(.*?)</NUM>", r"\1", s)
-
     # Retain Devanagari, English & Latin characters, numbers, punctuation, and apostrophes; replace others with a space
-    s = re.sub(r"[^\u0900-\u097Fa-zA-Z0-9,!.?'\u2019]+", r" ", s)
+    s = re.sub(r"[^\u0900-\u097Fa-zA-Z0-9.!?'\u2019]+", r" ", s)
 
     # Remove extra spaces
     s = re.sub(r"\s+", r" ", s).strip()
 
     return s
+
 
 
 
