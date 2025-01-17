@@ -87,6 +87,9 @@ python3 input/train.py \
 |-------------|-------------|---------------|----------------|-----------------|----------------|
 | Bi-LSTM     | LSTM        | True          | 2              | 128             | 15.070         |
 
+
+> More detailed results can be found in the [RESULTS.md](assets/RESULTS.md) file.
+
 ---
 
 ## Citation
