@@ -25,10 +25,6 @@ import utils
 from dataset import NMTDataModule
 from model import NMTModel
 
-import warnings
-
-# Suppress all UserWarnings (including missing glyphs warnings)
-warnings.filterwarnings("ignore", category=UserWarning)
 
 
 class NMTTrainer(pl.LightningModule):
@@ -219,7 +215,6 @@ class NMTTrainer(pl.LightningModule):
         input_words = input_sentence.split(' ')
         attentions = attentions[:len(output_words), :len(input_words)]
         cax = ax.matshow(attentions.cpu().numpy(), cmap='bone')
-
         fig.colorbar(cax)
 
         ax.set_xticklabels([''] + input_words, 

@@ -3,6 +3,10 @@ import random
 import json
 import torch
 import numpy as np
+import warnings
+
+# Suppress all UserWarnings (including missing glyphs warnings)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 SOS_Token = 0
 EOS_Token = 1
