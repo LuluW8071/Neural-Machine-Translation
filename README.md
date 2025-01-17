@@ -73,13 +73,37 @@ python3 input/train.py \
 
 ## Experiment Results
 
-### Nepali to English
+The dataset was filtered with a `max_len` of __16__ and a `min_len` of __4__. A total of ~500k sentence pairs were used for training and ~90k for validation. The model was trained on 2×T4 GPUs with a batch size of 128 (Effective Batch Size = 2×128). __Sacre BLEU score__ with __4-gram__ was used as the primary evaluation metric.
 
-| **Encoder** | **Decoder** | **Attention** | **RNN Layers** | **Hidden Size** | **BLEU Score** |
-|-------------|-------------|---------------|----------------|-----------------|----------------|
-| GRU         | GRU         | False         | 2              | 128             | 10.758         |
-| LSTM        | LSTM        | True          | 2              | 128             | 22.598         |
-| Bi-LSTM     | LSTM        | True          | 2              | 128             | 25.155         |
+> [!IMPORTANT]  
+> Teacher forcing helps train variable-length sequences by preventing error propagation and ensuring stable learning, as cross-entropy loss struggles with varying lengths. So, targets was paased during training and validation. For final validation (test), inference is done without teacher forcing to test real-world performance.  
+
+### Nepali to English  
+
+| **Encoder** | **Decoder** | **Attention** | **RNN Layers** | **Hidden Size** | **Avg. BLEU Score** |  
+|-------------|------------|---------------|----------------|-----------------|----------------|  
+| GRU         | GRU        | False         | 2              | 128             | 10.758         |  
+| LSTM        | LSTM       | True          | 2              | 128             | 22.598         |  
+| BiLSTM      | LSTM       | True          | 2              | 128             | 25.155         |  
+
+#### Translations  
+
+> Examples of translations from Nepali to English using __BiLSTM-LSTM with Attention__.   
+
+| **Source** | **Ground Truth** | **Translated** | **BLEU Score** |  
+|------------|----------------|----------------|----------------|  
+| काठमाडौं पोष्ट अक्टोबर ५ २०१९ बाट केही माथिल्ला कथाहरू यहाँ छन् । | here are some of the top stories from the kathmandu post october 5 2019 . | here are some top stories from kathmandu post october 5 2019 2019 . | 47.83 |  
+| जुलुसमा नेपाली कांग्रेस गणेशमान र गिरिजा मुर्दावादका नारा लगाएका थिए । | the procession chanted slogans of nepali congress ganeshman and girija murdabad . | in the procession the slogans of nepali congress ganeshman and girija prasad . | 57.27 |  
+| कार्यक्रम सफल पार्न जनसम्पर्क समितिले सबैमा आव्हान गरेको छ | the public relations committee has called for everyone to succeed the program | the public committee has invited the public relations to succeed the program | 42.23 |  
+| नेपाल विद्युत् प्राधिकरणले विभिन्न परियोजनाहरूकालागि प्रस्ताव गरेको विद्युत् खरिद सम्झ्ौतालाई परिमार्जन गर्नुपर्छ । | the nepal electricity authority should modify the power purchase agreement proposed for various projects . | nepal electricity authority should propose that the electricity purchased by various syndicates . | 25.26 |  
+
+#### Attention Plots  
+
+| **Translation 1** | **Translation 2** |  
+|------------------|------------------|  
+| ![BiLSTM-LSTM-Attn1](assets/attn_plot_1.png) | ![BiLSTM-LSTM-Attn2](assets/attn_plot_2.png) |  
+| **Translation 3** | **Translation 4** |  
+| ![BiLSTM-LSTM-Attn3](assets/attn_plot_3.png) | ![BiLSTM-LSTM-Attn4](assets/attn_plot_4.png) | 
 
 ### English to Nepali
 
@@ -87,8 +111,6 @@ python3 input/train.py \
 |-------------|-------------|---------------|----------------|-----------------|----------------|
 | Bi-LSTM     | LSTM        | True          | 2              | 128             | 15.070         |
 
-
-> More detailed results can be found in the [RESULTS.md](assets/RESULTS.md) file.
 
 ---
 
