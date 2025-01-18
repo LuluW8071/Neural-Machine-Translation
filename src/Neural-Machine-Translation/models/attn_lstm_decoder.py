@@ -42,8 +42,8 @@ class AttnLSTMDecoder(nn.Module):
             decoder_outputs.append(decoder_output)
             attentions.append(attn_weights)
 
-            if target_tensor is not None and torch.rand(1) > 0.2: 
-                # Teacher forcing: Feed the target as the next input (80% chance)
+            if target_tensor is not None and torch.rand(1) > 0.1: 
+                # Teacher forcing: Feed the target as the next input (90% chance)
                 decoder_input = target_tensor[:, i].unsqueeze(1)
             else:
                 # Without teacher forcing: use its own predictions as the next input
