@@ -54,25 +54,23 @@ Before starting, add your **Comet ML API key** and **project name** to the `.env
 | `-lrf`, `--lr_factor` | Factor for learning rate decay | `0.5` |
 | `-lrp`, `--lr_patience` | Learning rate patience for decay | `1` |
 | `-mlt`, `--min_lr_threshold` | Minimum learning rate threshold | `1e-2` |
-| `-mlr`, `--min_lr` | Minimum learning rate | `1e-4` |
 | `--precision` | Precision mode | `32-true` |
 | `--checkpoint_path` | Path to a checkpoint file for resuming training | None |
 | `-gc`, `--grad_clip` | Gradient norm clipping value | `1.0` |
 | `-ag`, `--acc_grad` | Number of batches for gradient accumulation | `2` |
 
 ```bash
-python3 input/train.py \
+python3 train.py \
   -d cuda -w 4 -g 2 -db ddp \
   --input_lang ne --output_lang en \
-  --train_path train.tsv --valid_path valid.tsv --font_path custom_font.ttf \
-  --batch_size 64 -ag 2 --epochs 50 --max_len 16 --min_len 4 \
-  -lr 4e-3 -mlr 1e-4 \
-  -hs 256 --nl 2 --mt lstm --attention --bidirection
+  --train_path train.tsv --valid_path valid.tsv --font_path custom_font.otf \
+  --batch_size 64 -ag 2 --epochs 50 --max_len 16 --min_len 4 -lr 4e-3 \
+  -hs 128 --nl 2 --mt lstm --attention --bidirection
 ```
 
 > [!NOTE]  
 > - Use the `--reverse` flag if you want to train the model with reversed source and target languages.
-> - Insert the checkpoint path if you want to resume training with saved weights. However, note that `max_len` and `min_len` must match to ensure consistency between input and output parameters.
+> - Insert the path of checkpoint using `--checkpoint path` flag if you want to resume training with saved weights. However, note that `max_len` and `min_len` must match to ensure consistency between input and output parameters.
 
 ## Experiment Results
 
