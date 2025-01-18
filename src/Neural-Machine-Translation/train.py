@@ -9,22 +9,21 @@ import torch.optim as optim
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from matplotlib.font_manager import FontProperties
 
+from matplotlib.font_manager import FontProperties
+from PIL import Image
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
 from pytorch_lightning.loggers import CometLogger
-from PIL import Image
 from torchmetrics.text import SacreBLEUScore
-
-# Load API
-from dotenv import load_dotenv
-load_dotenv()
 
 import utils
 
 from dataset import NMTDataModule
 from model import NMTModel
 
+# Load API
+from dotenv import load_dotenv
+load_dotenv()
 
 
 class NMTTrainer(pl.LightningModule):
