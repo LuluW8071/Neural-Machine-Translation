@@ -20,6 +20,7 @@ import utils
 
 from dataset import NMTDataModule
 from model import NMTModel
+from checkpoint import load_checkpoint
 
 # Load API
 from dotenv import load_dotenv
@@ -62,7 +63,7 @@ class NMTTrainer(pl.LightningModule):
             lr=self.args.learning_rate,
             betas=(0.9, 0.999),
             eps=1e-8,
-            weight_decay=0.01,
+            weight_decay=0.01
         )
 
         scheduler = {
@@ -72,8 +73,7 @@ class NMTTrainer(pl.LightningModule):
                 factor=self.args.lr_factor,
                 patience=self.args.lr_patience,
                 threshold=self.args.min_lr_threshold,
-                threshold_mode='rel',
-                min_lr=self.args.min_lr
+                threshold_mode='rel'
             ),
             'monitor': 'val_loss',              # Metric to monitor
             'interval': 'epoch',                # Scheduler step every epoch
@@ -122,7 +122,6 @@ class NMTTrainer(pl.LightningModule):
     
     def on_validation_epoch_end(self):
         """ Log validation metrics after validation epoch end """
-        # Avg. loss and metrics for validation
         avg_val_loss = torch.stack(self.val_losses).mean()
         avg_quad_bleu = torch.stack(self.quadgram_bleu_scores).mean()
 
@@ -199,7 +198,6 @@ class NMTTrainer(pl.LightningModule):
                 }
                 self.logger.experiment.log_image(img, metadata=metadata)
 
-                # Close the buffer
                 buf.close()
 
         # Log source, target and translated texts
@@ -274,9 +272,15 @@ def main(args):
     }
 
     model = NMTModel(**h_params)
-    nmt_trainer = NMTTrainer(model, data_module, args)
+    
+    if args.checkpoint_path:
+        encoder_state_dict, decoder_state_dict = load_checkpoint(args.checkpoint_path)
+        model.encoder.load_state_dict(encoder_state_dict)
+        model.decoder.load_state_dict(decoder_state_dict) 
 
-    # Initialize the trainer
+    # Initialize the trainer and logger    
+    nmt_trainer = NMTTrainer(model, data_module, args)
+    
     comet_logger = CometLogger(
         api_key=os.getenv('API_KEY'), 
         project_name=os.getenv('PROJECT_NAME')
@@ -286,18 +290,18 @@ def main(args):
     checkpoint_callback = ModelCheckpoint(
         monitor='val_loss',
         dirpath="./saved_checkpoint/",       
-        filename='nmt-{epoch:02d}-{val_loss:.3f}-{test_quad_bleu:.3f}',                                             
+        filename='nmt-{epoch:02d}-{val_loss:.3f}-{val_quad_bleu:.3f}',                                             
         save_top_k=2,
         mode='min',
-        save_weights_only=True
+        save_weights_only=True      # Save only the weights cuz checkpoint is too large
     )
 
     # Trainer Parameters
     trainer_args = {
         'accelerator': args.device,                                     # Device to use for training
         'devices': args.gpus,                                           # Number of GPUs to use for training
-        'min_epochs': 1,                                                # Minm. no. of epochs to run
-        'max_epochs': args.epochs,                                      # Maxm. no. of epochs to run                               
+        'min_epochs': 1,
+        'max_epochs': args.epochs,                              
         'precision': args.precision,                                    # Precision to use for training
         'check_val_every_n_epoch': 1,                                   # No. of epochs to run validation
         'gradient_clip_val': args.grad_clip,                            # Gradient norm clipping value
@@ -354,7 +358,6 @@ if __name__ == '__main__':
     parser.add_argument('-lrf', '--lr_factor', default=0.5, type=float, help='learning rate factor for decay')
     parser.add_argument('-lrp', '--lr_patience', default=1, type=int, help='learning rate patience for decay')
     parser.add_argument('-mlt', '--min_lr_threshold', default=1e-2, type=float, help='minimum learning rate threshold')
-    parser.add_argument('-mlr', '--min_lr', default=1e-4, type=float, help='minimum learning rate')
 
     parser.add_argument('--precision', default='32-true', type=str, help='precision')
     parser.add_argument('--checkpoint_path', default=None, type=str, help='path of checkpoint file to resume training')
