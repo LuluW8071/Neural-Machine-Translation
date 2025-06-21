@@ -2,6 +2,12 @@
 *.csv
 *.ckpt
 *.log
+*.model
+*.vocab
+*.tsv
+
+saved_checkpoints/
+env/
 
 # Caches
 __pycache__
