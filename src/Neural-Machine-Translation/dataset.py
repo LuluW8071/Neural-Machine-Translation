@@ -64,8 +64,8 @@ class NMTDataModule(pl.LightningDataModule):
         self.input_lang = utils.WordVocabulary(self.lang2 if self.reverse else self.lang1, input_text_path=tmp_input_path)
         self.output_lang = utils.WordVocabulary(self.lang1 if self.reverse else self.lang2, input_text_path=tmp_output_path)
 
-        os.remove(tmp_input_path)
-        os.remove(tmp_output_path)
+        # os.remove(tmp_input_path)
+        # os.remove(tmp_output_path)
 
     def _prepare_data_pairs(self, pairs, input_lang, output_lang, max_len, EOS_token):
         num_pairs = len(pairs)
@@ -109,10 +109,10 @@ class NMTDataModule(pl.LightningDataModule):
         logger.info(f"Output vocab size: {self.output_lang.n_words}")
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers, pin_memory=True)
 
     def val_dataloader(self):
-        return DataLoader(self.valid_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+        return DataLoader(self.valid_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers, pin_memory=True)
 
     def test_dataloader(self):
         return self.val_dataloader()

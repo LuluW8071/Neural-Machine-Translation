@@ -14,7 +14,7 @@ EOS_Token = 1
 
 class WordVocabulary:
     """BPE vocabulary using SentencePiece."""
-    def __init__(self, name, model_prefix=None, input_text_path=None, vocab_size=8000):
+    def __init__(self, name, model_prefix=None, input_text_path=None, vocab_size=16000):
         self.name = name
         self.sp = spm.SentencePieceProcessor()
         self.model_prefix = model_prefix or name
@@ -27,19 +27,27 @@ class WordVocabulary:
             print(f"[INFO] Loaded existing SentencePiece model: {model_file}")
         elif input_text_path:
             print(f"[INFO] Training new SentencePiece model: {model_file}")
+
+            # Choose character coverage based on model_prefix
+            if "en" in self.model_prefix.lower():
+                character_coverage = 0.9995  # English (ASCII-dominant)
+            else:
+                character_coverage = 1.0     # Nepali or other non-Latin languages
+
             spm.SentencePieceTrainer.train(
                 input=input_text_path,
                 model_prefix=self.model_prefix,
                 vocab_size=vocab_size,
                 model_type="bpe",
-                pad_id=0,          # <pad>
-                bos_id=1,          # <s>
-                eos_id=2,          # </s>
+                bos_id=SOS_Token,          # <s>
+                eos_id=EOS_Token,          # </s>
+                pad_id=2,          # <pad>
                 unk_id=3,          # <unk>
                 pad_piece="<pad>",
                 bos_piece="<s>",
                 eos_piece="</s>",
                 unk_piece="<unk>",
+                character_coverage=character_coverage,
                 train_extremely_large_corpus=True,
                 hard_vocab_limit=False
             )
@@ -92,7 +100,7 @@ def normalize_String(s):
     # s = s.replace(",", "")
 
     # Add a space before punctuation marks if not already present (except for apostrophes)
-    s = re.sub(r"(?<!\s)([.!?¿¡।])", r" \1", s)
+    # s = re.sub(r"(?<!\s)([.!?¿¡।])", r" \1", s)
 
     # Remove patterns like (1), (२), or (ग)
     s = re.sub(r"\(\d+\)|\([\u0966-\u096F]+\)|\([a-z\u0900-\u097F]\)", r"", s)
