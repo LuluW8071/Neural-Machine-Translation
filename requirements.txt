@@ -1,9 +1,9 @@
 lightning
-torch
+# torch
 torchmetrics
 comet_ml
 numpy
 matplotlib
 pillow
 python-dotenv
-mplcairo
+# mplcairo
