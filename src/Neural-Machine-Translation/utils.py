@@ -4,71 +4,89 @@ import json
 import torch
 import numpy as np
 import warnings
+import sentencepiece as spm
+import os
 
-# Suppress all UserWarnings (including missing glyphs warnings)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 SOS_Token = 0
 EOS_Token = 1
 
 class WordVocabulary:
-    """ Word class to store vocabulary and corpus """
-    def __init__(self, name):
+    """BPE vocabulary using SentencePiece."""
+    def __init__(self, name, model_prefix=None, input_text_path=None, vocab_size=16000):
         self.name = name
-        self.word2index = {}
-        self.word2count = {}
-        self.index2word = {0: "<SOS>", 1: "<EOS>"}
-        self.n_words = 2  # Count SOS and EOS Tokens
+        self.sp = spm.SentencePieceProcessor()
+        self.model_prefix = model_prefix or name
+        model_file = f"{self.model_prefix}.model"
+        vocab_file = f"{self.model_prefix}.vocab"
+
+        if os.path.exists(model_file) and os.path.exists(vocab_file):
+            # Load existing model
+            self.sp.load(model_file)
+            print(f"[INFO] Loaded existing SentencePiece model: {model_file}")
+        elif input_text_path:
+            print(f"[INFO] Training new SentencePiece model: {model_file}")
+
+            # Choose character coverage based on model_prefix
+            if "en" in self.model_prefix.lower():
+                character_coverage = 0.9995  # English (ASCII-dominant)
+            else:
+                character_coverage = 1.0     # Nepali or other non-Latin languages
+
+            spm.SentencePieceTrainer.train(
+                input=input_text_path,
+                model_prefix=self.model_prefix,
+                vocab_size=vocab_size,
+                model_type="bpe",
+                bos_id=SOS_Token,          # <s>
+                eos_id=EOS_Token,          # </s>
+                pad_id=2,          # <pad>
+                unk_id=3,          # <unk>
+                pad_piece="<pad>",
+                bos_piece="<s>",
+                eos_piece="</s>",
+                unk_piece="<unk>",
+                character_coverage=character_coverage,
+                train_extremely_large_corpus=True,
+                hard_vocab_limit=False
+            )
+            self.sp.load(model_file)
+        else:
+            raise ValueError("Must provide either both model files or a corpus to train.")
 
     def addSentence(self, sentence):
-        """ Split sentence into words and add to vocabulary """
-        for word in sentence.split(' '):
-            self.addWord(word)
+        pass  # Not needed in BPE
 
     def addWord(self, word):
-        """ Function: Add word to vocabulary if not added previously"""
-        if word not in self.word2index:
-            self.word2index[word] = self.n_words
-            self.word2count[word] = 1
-            self.index2word[self.n_words] = word
-            self.n_words += 1
-        else:
-            self.word2count[word] += 1
+        pass  # Not needed in BPE
+
+    @property
+    def word2index(self):
+        return {self.sp.id_to_piece(i): i for i in range(self.sp.get_piece_size())}
+
+    @property
+    def index2word(self):
+        return {i: self.sp.id_to_piece(i) for i in range(self.sp.get_piece_size())}
+
+    @property
+    def n_words(self):
+        return self.sp.get_piece_size()
 
     def save_to_file(self, file_path, input=True):
-        """Save vocabulary to a file. Save word2index if input=True, else save index2word."""
-        if input:
-            data = {
-                "name": self.name,
-                "word2index": self.word2index,
-                "n_words": self.n_words
-            }
-        else:
-            data = {
-                "name": self.name,
-                "index2word": self.index2word,
-                "n_words": self.n_words
-            }
-
+        data = {
+            "name": self.name,
+            "model_prefix": self.model_prefix
+        }
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
         print(f"Vocabulary saved to {file_path}")
 
     @classmethod
     def load_from_file(cls, file_path, input=True):
-        """Load vocabulary from a file. Load word2index if input=True, else load index2word."""
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-
-        vocab = cls(data["name"])
-        if input:
-            vocab.word2index = data["word2index"]
-        else:
-            vocab.index2word = data["index2word"]
-
-        vocab.n_words = data["n_words"]
-        print(f"Vocabulary loaded from {file_path}")
-        return vocab
+        return cls(data["name"], model_prefix=data["model_prefix"])
 
 # NOTE: Might need change in the pre processing of strings as per language used
 def normalize_String(s):
@@ -79,16 +97,16 @@ def normalize_String(s):
     s = re.sub(r"([.!?।])\1+", r"\1", s)
 
     # Remove all commas
-    s = s.replace(",", "")
+    # s = s.replace(",", "")
 
     # Add a space before punctuation marks if not already present (except for apostrophes)
-    s = re.sub(r"(?<!\s)([.!?¿¡।])", r" \1", s)
+    # s = re.sub(r"(?<!\s)([.!?¿¡।])", r" \1", s)
 
     # Remove patterns like (1), (२), or (ग)
     s = re.sub(r"\(\d+\)|\([\u0966-\u096F]+\)|\([a-z\u0900-\u097F]\)", r"", s)
 
     # Retain Devanagari, English & Latin characters, numbers, punctuation, and apostrophes; replace others with a space
-    s = re.sub(r"[^\u0900-\u097Fa-zA-Z0-9.!?'\u2019]+", r" ", s)
+    # s = re.sub(r"[^\u0900-\u097Fa-zA-Z0-9.!?'\u2019]+", r" ", s)
 
     # Remove extra spaces
     s = re.sub(r"\s+", r" ", s).strip()
@@ -97,19 +115,16 @@ def normalize_String(s):
 
 
 
-
-def filterPairs(pairs, max_len=32, min_len=4):
-    """ Filter pairs of sentences with length greater than max_len and less than min_len """
-    MAX_LENGTH, MIN_LENGTH = max_len, min_len
+def filterPairs(pairs, max_len=99, min_len=4, tokenizer=None):
     return [
         pair for pair in pairs
-        if (len(pair[0].split(' ')) >= MIN_LENGTH and len(pair[1].split(' ')) >= MIN_LENGTH) and
-        (len(pair[0].split(' ')) < MAX_LENGTH and len(pair[1].split(' ')) < MAX_LENGTH)
+        if (len(tokenizer.sp.encode(pair[0])) >= min_len and len(tokenizer.sp.encode(pair[0])) <= max_len) and
+           (len(tokenizer.sp.encode(pair[1])) >= min_len and len(tokenizer.sp.encode(pair[1])) <= max_len)
     ]
 
 
 def indexesFromSentence(lang, sentence):
-    return [lang.word2index[word] for word in sentence.split(' ')]
+    return lang.sp.encode(sentence, out_type=int)
 
 def tensorFromSentence(lang, sentence, device):
     indexes = indexesFromSentence(lang, sentence)
@@ -121,22 +136,11 @@ def tensorFromPair(input_lang, output_lang, pair):
     output_tensor = tensorFromSentence(output_lang, pair[1])
     return (input_tensor, output_tensor)
 
-
 def sentenceFromIndexes(lang, indexes):
-    """Convert a list of token indices back into a sentence."""
-    words = []
-    for index in indexes:
-        if index in lang.index2word:
-            word = lang.index2word[index]
-            # Stop at the EOS token
-            if word == "<EOS>":
-                break
-            words.append(word)
-    return ' '.join(words)
-
+    tokens = [lang.sp.id_to_piece(i) for i in indexes if i != EOS_Token]
+    return lang.sp.decode_pieces(tokens)
 
 def set_seed(seed):
-    """Set seed for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
 

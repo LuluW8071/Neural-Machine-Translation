@@ -111,7 +111,7 @@ class NMTTrainer(pl.LightningModule):
         targets = [utils.sentenceFromIndexes(self.output_lang, tgt.tolist()) for tgt in target_tensor]
         
         # Log some examples
-        if batch_idx % 256 == 0:
+        if batch_idx % 64 == 0:
             self._logger(batch_idx, input_tensor, targets, decoded_sentences, attn_weights, phase="Validation")
 
         # Calculate metrics
@@ -163,15 +163,13 @@ class NMTTrainer(pl.LightningModule):
 
         batch_sentences = []    # List to hold sentences for the entire batch
         for ids in decoded_ids:
-            decoded_words = []
+            tokens = []
             for idx in ids:
-                if idx == 1:    # EOS token: 1
-                    # decoded_words.append('<EOS>')
+                if idx == 1:  # EOS token
                     break
-                decoded_words.append(self.output_lang.index2word[idx])
-            sentence = ' '.join(decoded_words)
+                tokens.append(self.output_lang.sp.id_to_piece(idx))
+            sentence = self.output_lang.sp.decode_pieces(tokens)
             batch_sentences.append(sentence)
-
         return batch_sentences
     
     def _logger(self, batch_idx, input_tensors, target_tensors, decoded_sentences, attn_weights, phase):
@@ -283,7 +281,7 @@ def main(args):
     
     comet_logger = CometLogger(
         api_key=os.getenv('API_KEY'), 
-        project_name=os.getenv('PROJECT_NAME')
+        project=os.getenv('PROJECT_NAME')
     )
 
     # Checkpoint Callbacks
@@ -359,7 +357,7 @@ if __name__ == '__main__':
     parser.add_argument('-lrp', '--lr_patience', default=1, type=int, help='learning rate patience for decay')
     parser.add_argument('-mlt', '--min_lr_threshold', default=1e-2, type=float, help='minimum learning rate threshold')
 
-    parser.add_argument('--precision', default='32-true', type=str, help='precision')
+    parser.add_argument('--precision', default='16-mixed', type=str, help='precision')
     parser.add_argument('--checkpoint_path', default=None, type=str, help='path of checkpoint file to resume training')
     parser.add_argument('-gc', '--grad_clip', default=1.0, type=float, help='gradient norm clipping value')
     parser.add_argument('-ag', '--acc_grad', default=2, type=int, help='number of batches to accumulate gradients over')
